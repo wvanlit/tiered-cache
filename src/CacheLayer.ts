@@ -8,6 +8,8 @@ export class TieredCacheLayer implements CacheLayer {
   private readonly memory: Keyv;
   private readonly distributed: Keyv;
 
+  private readonly cacheInFlight: Map<string, Promise<any>> = new Map();
+
   constructor(settings: CacheSettings, memory: Keyv, distributed: Keyv) {
     this.settings = settings;
     this.memory = memory;
@@ -20,20 +22,30 @@ export class TieredCacheLayer implements CacheLayer {
       return memoryItem;
     }
 
-    const [distributedItem, distributedExpired] = await this.getFromCache<T>(this.distributed, key);
-    if (distributedItem && (!distributedExpired || allowExpired)) {
-      // Fill the memory cache so we don't have to go to the distributed cache every time
-      // If the distributed item is expired, we ensure the memory item is also expired
-      this.setInCache(this.memory, { key, value: distributedItem }, distributedExpired);
-
-      return distributedItem;
-    }
-
-    if (allowExpired && distributedExpired && memoryItem) {
+    // If we have an expired item in the memory cache and we are already fetching from the distributed cache,
+    // we return the expired value for performance reasons (if allowed)
+    if (this.cacheInFlight.has(key) && allowExpired && memoryItem) {
       return memoryItem;
     }
 
-    return null;
+    const fetch = async () => {
+      const [distributedItem, distributedExpired] = await this.getFromCache<T>(this.distributed, key);
+      if (distributedItem && (!distributedExpired || allowExpired)) {
+        // Fill the memory cache so we don't have to go to the distributed cache every time
+        // If the distributed item is expired, we ensure the memory item is also expired
+        this.setInCache(this.memory, { key, value: distributedItem }, distributedExpired);
+
+        return distributedItem;
+      }
+
+      if (allowExpired && distributedExpired && memoryItem) {
+        return memoryItem;
+      }
+
+      return null;
+    };
+
+    return await this.handleInFlight(this.cacheInFlight, key, fetch);
   }
 
   async set<T extends Cacheable>(item: CacheItem<T>): Promise<void> {
@@ -75,5 +87,17 @@ export class TieredCacheLayer implements CacheLayer {
     }
 
     return [memoryItem?.value ?? null, expired] as const;
+  }
+
+  private handleInFlight<T>(inflight: Map<string, Promise<any>>, key: string, fn: () => Promise<T>) {
+    if (inflight.has(key)) {
+      return inflight.get(key);
+    }
+
+    const promise = fn().finally(() => inflight.delete(key));
+
+    inflight.set(key, promise);
+
+    return promise;
   }
 }
