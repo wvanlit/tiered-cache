@@ -13,4 +13,6 @@ The library is built on top of KeyV, a low-level caching API, and is designed to
 
 ## Code Style
 
+1. Follow the style of the existing code as closely as possible
 1. Do not use comments unless they are necessary to explain complex behaviour
+1. Favour explicit over implicit

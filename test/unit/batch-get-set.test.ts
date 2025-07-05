@@ -56,7 +56,7 @@ describe("TieredCacheLayer batch get/set tests", () => {
   it("gets and sets full batches", async () => {
     await sut.setMany(items);
 
-    const outputs = await sut.getMany<Input>(keys);
+    const outputs = await sut.getMany<Input>(keys, false);
 
     expect(outputs).toMatchObject(inputs);
   });
@@ -65,7 +65,7 @@ describe("TieredCacheLayer batch get/set tests", () => {
     await sut.setMany(items);
     await distributedCache.clear();
 
-    const output = await sut.getMany<Input>(keys);
+    const output = await sut.getMany<Input>(keys, false);
 
     expect(output).toMatchObject(inputs);
   });
@@ -74,7 +74,7 @@ describe("TieredCacheLayer batch get/set tests", () => {
     await sut.setMany(items);
     await memoryCache.clear();
 
-    const output = await sut.getMany<Input>(keys);
+    const output = await sut.getMany<Input>(keys, false);
 
     expect(output).toMatchObject(inputs);
   });
@@ -87,9 +87,91 @@ describe("TieredCacheLayer batch get/set tests", () => {
       await memoryCache.deleteMany(keys.filter((_, i) => !data.memory.includes(i + 1)));
       await distributedCache.deleteMany(keys.filter((_, i) => !data.distributed.includes(i + 1)));
 
-      const output = await sut.getMany<Input>(keys);
+      const output = await sut.getMany<Input>(keys, false);
 
       expect(output).toMatchObject(inputs);
     },
   );
+
+  it("puts items in memory cache when only in distributed cache", async () => {
+    await sut.setMany(items);
+    await memoryCache.clear();
+
+    const outputs = await sut.getMany<Input>(keys, false);
+    expect(outputs).toMatchObject(inputs);
+  });
+
+  it("puts items as expired in memory cache when items only in distributed cache as expired", async () => {
+    await sut.setMany(items);
+    await memoryCache.clear();
+
+    vitest.advanceTimersByTime(1);
+    vitest.advanceTimersByTime((distributedStrictTtl - memoryStrictTtl) * 1000);
+
+    const outputs = await sut.getMany<Input>(keys, true);
+    expect(outputs).toMatchObject(inputs);
+  });
+
+  it("will expire entries after strict ttl passed", async () => {
+    await sut.setMany(items);
+
+    vitest.advanceTimersByTime(1);
+    vitest.advanceTimersByTime(memoryStrictTtl * 1000);
+
+    for (const key of keys) {
+      const inMem = await memoryCache.get(key);
+      expect(inMem).toBeUndefined();
+    }
+
+    const fresh = await sut.getMany<Input>(keys, false);
+    expect(fresh).toMatchObject(inputs);
+
+    vitest.advanceTimersByTime((distributedStrictTtl - memoryStrictTtl) * 1000);
+
+    const expired = await sut.getMany<Input>(keys, true);
+    expect(expired).toEqual([null, null, null]);
+
+    for (const key of keys) {
+      const inDist = await distributedCache.get(key);
+      expect(inDist).toBeUndefined();
+    }
+  });
+
+  it("will soft expire entries after soft ttl passes", async () => {
+    await sut.setMany(items);
+
+    vitest.advanceTimersByTime(1);
+    vitest.advanceTimersByTime(distributedSoftTtl * 1000);
+
+    const noExpired = await sut.getMany<Input>(keys, false);
+    const withExpired = await sut.getMany<Input>(keys, true);
+
+    expect(noExpired).toEqual([null, null, null]);
+    expect(withExpired).toMatchObject(inputs);
+  });
+
+  it("will fall back to memory if distributed is empty", async () => {
+    await sut.setMany(items);
+    await distributedCache.clear();
+
+    const outputs = await sut.getMany<Input>(keys, false);
+    expect(outputs).toMatchObject(inputs);
+  });
+
+  it("will fall back to expired memory if distributed is empty", async () => {
+    await sut.setMany(items);
+    await distributedCache.clear();
+
+    const initial = await sut.getMany<Input>(keys, false);
+    expect(initial).toMatchObject(inputs);
+
+    vitest.advanceTimersByTime(1);
+    vitest.advanceTimersByTime(memorySoftTtl * 1000);
+
+    const noExpired = await sut.getMany<Input>(keys, false);
+    const withExpired = await sut.getMany<Input>(keys, true);
+
+    expect(noExpired).toEqual([null, null, null]);
+    expect(withExpired).toMatchObject(inputs);
+  });
 });

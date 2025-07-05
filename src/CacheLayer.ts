@@ -33,7 +33,7 @@ export class TieredCacheLayer implements CacheLayer {
       if (distributedItem && (!distributedExpired || allowExpired)) {
         // Fill the memory cache so we don't have to go to the distributed cache every time
         // If the distributed item is expired, we ensure the memory item is also expired
-        this.setInCache(this.memory, { key, value: distributedItem }, distributedExpired);
+        this.setInCache(this.memory, { key, value: distributedItem, expired: distributedExpired });
 
         return distributedItem;
       }
@@ -52,26 +52,66 @@ export class TieredCacheLayer implements CacheLayer {
     await Promise.allSettled([this.setInCache(this.memory, item), this.setInCache(this.distributed, item)]);
   }
 
-  async getMany<T extends Cacheable>(keys: string[]): Promise<(T | null)[]> {
-    const mi = await this.getManyFromCache<T>(this.memory, keys);
+  async getMany<T extends Cacheable>(keys: string[], allowExpired: boolean): Promise<(T | null)[]> {
+    const fromMemory = await this.getManyFromCache<T>(this.memory, keys);
+    const missingItemsInMemory = fromMemory.some((i) => i[0] === null || i[1] /* expired */);
 
-    const anyMissing = mi.some((i) => i[0] === null);
-    if (!anyMissing) {
-      return mi.map((i) => i[0]);
+    // If all items are fresh in memory, just return them
+    if (!missingItemsInMemory) {
+      return fromMemory.map((i) => i[0]);
     }
 
-    const missing = mi
-      .map((v, i) => ({ key: keys[i], value: v[0], expired: v[1], index: i }))
-      .filter((o) => o.value === null);
+    // We use reduce to prevent having to map > filter > map
+    const missingKeys = fromMemory.reduce((list, value, index) => {
+      if (value[0] === null || value[1]) {
+        list.push(keys[index]);
+      }
+      return list;
+    }, Array<string>());
 
-    const di = await this.getManyFromCache<T>(
-      this.distributed,
-      missing.map((v) => v.key),
-    );
+    // We don't protect getMany from in flight requests, as it will create a lot of promises (1 per key)
+    // TODO: is there a smart way to do this?
+    const di = await this.getManyFromCache<T>(this.distributed, missingKeys);
 
     di.reverse();
 
-    return mi.map((m, i) => (m[0] ? m[0] : di.pop()![0]));
+    const result: (T | null)[] = [];
+    const toSet: CacheItem<T>[] = [];
+
+    for (let index = 0; index < fromMemory.length; index++) {
+      const [memoryItem, memoryExpired] = fromMemory[index];
+      if (!memoryExpired) {
+        result.push(memoryItem);
+        continue;
+      }
+
+      if (di.length) {
+        const [distributedItem, distributedExpired] = di.pop()!;
+        if (distributedItem) {
+          // Fill the memory cache so we don't have to go to the distributed cache every time
+          // If the distributed item is expired, we ensure the memory item is also expired
+          toSet.push({ key: keys[index], value: distributedItem, expired: distributedExpired });
+
+          if (!distributedExpired || allowExpired) {
+            result.push(distributedItem);
+            continue;
+          }
+        }
+      }
+
+      if (allowExpired && memoryItem) {
+        result.push(memoryItem);
+        continue;
+      }
+
+      result.push(null);
+    }
+
+    if (toSet.length) {
+      await this.setManyInCache(this.memory, toSet);
+    }
+
+    return result;
   }
 
   async setMany<T extends Cacheable>(items: CacheItem<T>[]): Promise<void> {
@@ -84,24 +124,28 @@ export class TieredCacheLayer implements CacheLayer {
     throw new Error("Method not implemented.");
   }
 
-  private setInCache<T extends Cacheable>(cache: Keyv, item: CacheItem<T>, asExpired: boolean = false) {
+  private setInCache<T extends Cacheable>(cache: Keyv, item: CacheItem<T>) {
     const isMemory = cache === this.memory;
     const setting = isMemory ? this.settings.ttl.memory : this.settings.ttl.distributed;
     const now = this.now();
-    const expiredAfter = asExpired ? now : now + setting.soft * MS_IN_A_SEC;
+    const expiredAfter = item.expired ? now : now + setting.soft * MS_IN_A_SEC;
 
     return cache.set<InternalCacheItem<T>>(item.key, { value: item.value, expiredAfter }, setting.strict * MS_IN_A_SEC);
   }
 
-  private setManyInCache<T extends Cacheable>(cache: Keyv, items: CacheItem<T>[], asExpired: boolean = false) {
+  private setManyInCache<T extends Cacheable>(cache: Keyv, items: CacheItem<T>[]) {
     const isMemory = cache === this.memory;
     const setting = isMemory ? this.settings.ttl.memory : this.settings.ttl.distributed;
     const now = this.now();
-    const expiredAfter = asExpired ? now : now + setting.soft * MS_IN_A_SEC;
+    const expiredAfter = now + setting.soft * MS_IN_A_SEC;
     const ttl = setting.strict * MS_IN_A_SEC;
 
     return cache.setMany<InternalCacheItem<T>>(
-      items.map((i) => ({ key: i.key, value: { value: i.value, expiredAfter }, ttl })),
+      items.map((item, i) => ({
+        key: item.key,
+        value: { value: item.value, expiredAfter: item.expired ? now : expiredAfter },
+        ttl,
+      })),
     );
   }
 
