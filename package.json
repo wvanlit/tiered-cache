@@ -1,0 +1,29 @@
+{
+  "name": "tiered-cache",
+  "description": "A Typescript cache library supporting an in-memory and distributed layer at the same time",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:watch": "npm run docker:up && vitest watch && npm run docker:down",
+    "test:unit": "vitest run --project unit",
+    "test:integration": "npm run docker:up && vitest run --project integration && npm run docker:down",
+    "docker:up": "docker-compose -f docker-compose.yml up -d",
+    "docker:down": "docker-compose -f docker-compose.yml down"
+  },
+  "dependencies": {
+    "@keyv/redis": "^4.5.0",
+    "keyv": "^5.3.4"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.10",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wvanlit/tiered-cache.git"
+  },
+  "author": "Wessel van Lit",
+  "license": "UNLICENSED",
+  "homepage": "https://github.com/wvanlit/tiered-cache#readme"
+}
