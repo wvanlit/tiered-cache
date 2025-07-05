@@ -1,72 +1,5 @@
 import Keyv from "keyv";
-
-// Only JSON-compatible values are cacheable
-type CacheablePrimitive = string | number | boolean | null | undefined;
-type Cacheable = CacheablePrimitive | Cacheable[] | { [key: string]: Cacheable };
-
-export interface CacheItem<T extends Cacheable> {
-  key: string;
-  value: T;
-  memoryOnly?: boolean;
-}
-
-export interface CacheLayer {
-  get<T extends Cacheable>(key: string, allowExpired: boolean): Promise<T | null>;
-  set<T extends Cacheable>(item: CacheItem<T>): Promise<void>;
-
-  getMany<T extends Cacheable>(...keys: string[]): Promise<(T | null)[]>;
-  setMany<T extends Cacheable>(...items: CacheItem<T>[]): Promise<void>;
-
-  getOrSet<T extends Cacheable>(key: string, factory: () => Promise<T>): Promise<T>;
-  getOrSetMany<T extends Cacheable>(keys: string[], factory: (missing: string[]) => Promise<T[]>): Promise<T[]>;
-}
-
-export type CacheSettings = {
-  ttl: {
-    memory: {
-      /**
-       * Seconds until data is considered stale
-       */
-      soft: number;
-
-      /**
-       * Seconds until data expires
-       */
-      strict: number;
-    };
-    distributed: {
-      /**
-       * Seconds until data is considered stale
-       */
-      soft: number;
-
-      /**
-       * Seconds until data expires
-       */
-      strict: number;
-    };
-  };
-
-  timeouts: {
-    /**
-     * Returns stale data if available - in millis
-     */
-    soft: number;
-
-    /**
-     * Throws an exception when passed - in millis
-     */
-    strict: number;
-  };
-
-  allowBackgroundUpdates?: boolean;
-};
-
-export type InternalCacheItem<T> = {
-  value: T;
-  // For soft ttl - Unix Timestamp
-  expiredAfter: number;
-};
+import { CacheLayer, CacheSettings, Cacheable, CacheItem, InternalCacheItem } from "./Types";
 
 const MS_IN_A_SEC = 1000;
 
@@ -84,27 +17,22 @@ export class TieredCacheLayer implements CacheLayer {
   async get<T extends Cacheable>(key: string, allowExpired: boolean): Promise<T | null> {
     const [memoryItem, memoryExpired] = await this.getFromCache<T>(this.memory, key);
     if (memoryItem && !memoryExpired) {
-      return memoryItem.value;
+      return memoryItem;
     }
 
     const [distributedItem, distributedExpired] = await this.getFromCache<T>(this.distributed, key);
     if (distributedItem && (!distributedExpired || allowExpired)) {
-      return distributedItem.value;
+      return distributedItem;
     }
 
     if (allowExpired && distributedExpired && memoryItem) {
-      return memoryItem!.value;
+      return memoryItem;
     }
 
     return null;
   }
 
   async set<T extends Cacheable>(item: CacheItem<T>): Promise<void> {
-    if (item.memoryOnly) {
-      await this.setInCache(this.memory, item);
-      return;
-    }
-
     await Promise.allSettled([this.setInCache(this.memory, item), this.setInCache(this.distributed, item)]);
   }
 
@@ -136,7 +64,7 @@ export class TieredCacheLayer implements CacheLayer {
     return Date.now();
   }
 
-  private async getFromCache<T extends Cacheable>(cache: Keyv, key: string) {
+  private async getFromCache<T extends Cacheable>(cache: Keyv, key: string): Promise<[T | null, boolean]> {
     const memoryItem = await cache.get<InternalCacheItem<T>>(key);
 
     let expired = true;
@@ -144,6 +72,6 @@ export class TieredCacheLayer implements CacheLayer {
       expired = memoryItem.expiredAfter < this.now();
     }
 
-    return [memoryItem, expired] as const;
+    return [memoryItem?.value ?? null, expired] as const;
   }
 }

@@ -1,55 +1,66 @@
 import Keyv from "keyv";
-import { describe, it, expect, vitest, beforeEach } from "vitest";
-import { CacheLayer, TieredCacheLayer } from "../../src/CacheLayer";
+import { describe, it, expect, vitest, beforeEach, beforeAll, afterAll } from "vitest";
+import { TieredCacheLayer } from "../../src/CacheLayer";
+import { CacheLayer } from "../../src/Types";
 
-vitest.useFakeTimers();
+describe("TieredCacheLayer get/set tests", () => {
+  beforeAll(() => vitest.useFakeTimers());
+  afterAll(() => vitest.useRealTimers());
 
-let sut: CacheLayer;
-let memoryCache: Keyv;
-let distributedCache: Keyv;
+  let sut: CacheLayer;
+  let memoryCache: Keyv;
+  let distributedCache: Keyv;
 
-const memorySoftTtl = 1;
-const memoryStrictTtl = 2;
-const distributedSoftTtl = 5;
-const distributedStrictTtl = 10;
+  const memorySoftTtl = 1;
+  const memoryStrictTtl = 2;
+  const distributedSoftTtl = 5;
+  const distributedStrictTtl = 10;
 
-beforeEach(() => {
-  memoryCache = new Keyv();
-  // We're "mocking" the distributed cache using a memory cache
-  distributedCache = new Keyv();
+  beforeEach(() => {
+    memoryCache = new Keyv();
+    // We're "mocking" the distributed cache using a memory cache
+    distributedCache = new Keyv();
 
-  sut = new TieredCacheLayer(
-    {
-      timeouts: {
-        soft: 100,
-        strict: 200,
-      },
-      ttl: {
-        memory: {
-          soft: memorySoftTtl,
-          strict: memoryStrictTtl,
+    sut = new TieredCacheLayer(
+      {
+        timeouts: {
+          soft: 100,
+          strict: 200,
         },
-        distributed: {
-          soft: distributedSoftTtl,
-          strict: distributedStrictTtl,
+        ttl: {
+          memory: {
+            soft: memorySoftTtl,
+            strict: memoryStrictTtl,
+          },
+          distributed: {
+            soft: distributedSoftTtl,
+            strict: distributedStrictTtl,
+          },
         },
       },
-    },
-    memoryCache,
-    distributedCache,
-  );
-});
+      memoryCache,
+      distributedCache,
+    );
+  });
 
-const key = "test";
-const input = Object.freeze({
-  x: new Date().toString(),
-  y: 12,
-  z: "hello",
-});
+  const key = "test";
+  const input = Object.freeze({
+    x: new Date().toString(),
+    y: 12,
+    z: "hello",
+  });
 
-describe("TieredCacheLayer read/write tests", () => {
   it("can read and write the same value from both caches", async () => {
     await sut.set({ key, value: input });
+
+    const output = await sut.get<typeof input>(key, false);
+
+    expect(output).toMatchObject(input);
+  });
+
+  it("falls back to memory cache when not in distributed cache", async () => {
+    await sut.set({ key, value: input });
+    await distributedCache.clear();
 
     const output = await sut.get<typeof input>(key, false);
 
@@ -71,8 +82,10 @@ describe("TieredCacheLayer read/write tests", () => {
     vitest.advanceTimersByTime((distributedStrictTtl - memoryStrictTtl) * 1000);
 
     const after = await sut.get<typeof input>(key, false);
+    const inDistributed = await distributedCache.get(key);
 
     expect(after).toBeNull();
+    expect(inDistributed).toBeUndefined();
   });
 
   it("will soft expire entry after soft ttl passes", async () => {
