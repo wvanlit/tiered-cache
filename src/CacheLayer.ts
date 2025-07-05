@@ -52,11 +52,30 @@ export class TieredCacheLayer implements CacheLayer {
     await Promise.allSettled([this.setInCache(this.memory, item), this.setInCache(this.distributed, item)]);
   }
 
-  getMany<T extends Cacheable>(...keys: string[]): Promise<(T | null)[]> {
-    throw new Error("Method not implemented.");
+  async getMany<T extends Cacheable>(keys: string[]): Promise<(T | null)[]> {
+    const mi = await this.getManyFromCache<T>(this.memory, keys);
+
+    const anyMissing = mi.some((i) => i[0] === null);
+    if (!anyMissing) {
+      return mi.map((i) => i[0]);
+    }
+
+    const missing = mi
+      .map((v, i) => ({ key: keys[i], value: v[0], expired: v[1], index: i }))
+      .filter((o) => o.value === null);
+
+    const di = await this.getManyFromCache<T>(
+      this.distributed,
+      missing.map((v) => v.key),
+    );
+
+    di.reverse();
+
+    return mi.map((m, i) => (m[0] ? m[0] : di.pop()![0]));
   }
-  setMany<T extends Cacheable>(...items: CacheItem<T>[]): Promise<void> {
-    throw new Error("Method not implemented.");
+
+  async setMany<T extends Cacheable>(items: CacheItem<T>[]): Promise<void> {
+    await Promise.allSettled([this.setManyInCache(this.memory, items), this.setManyInCache(this.distributed, items)]);
   }
   getOrSet<T extends Cacheable>(key: string, factory: () => Promise<T>): Promise<T> {
     throw new Error("Method not implemented.");
@@ -74,19 +93,41 @@ export class TieredCacheLayer implements CacheLayer {
     return cache.set<InternalCacheItem<T>>(item.key, { value: item.value, expiredAfter }, setting.strict * MS_IN_A_SEC);
   }
 
-  private now() {
-    return Date.now();
+  private setManyInCache<T extends Cacheable>(cache: Keyv, items: CacheItem<T>[], asExpired: boolean = false) {
+    const isMemory = cache === this.memory;
+    const setting = isMemory ? this.settings.ttl.memory : this.settings.ttl.distributed;
+    const now = this.now();
+    const expiredAfter = asExpired ? now : now + setting.soft * MS_IN_A_SEC;
+    const ttl = setting.strict * MS_IN_A_SEC;
+
+    return cache.setMany<InternalCacheItem<T>>(
+      items.map((i) => ({ key: i.key, value: { value: i.value, expiredAfter }, ttl })),
+    );
   }
 
   private async getFromCache<T extends Cacheable>(cache: Keyv, key: string): Promise<[T | null, boolean]> {
-    const memoryItem = await cache.get<InternalCacheItem<T>>(key);
+    const item = await cache.get<InternalCacheItem<T>>(key);
 
     let expired = true;
-    if (memoryItem) {
-      expired = memoryItem.expiredAfter < this.now();
+    if (item) {
+      expired = item.expiredAfter < this.now();
     }
 
-    return [memoryItem?.value ?? null, expired] as const;
+    return [item?.value ?? null, expired] as const;
+  }
+
+  private async getManyFromCache<T extends Cacheable>(cache: Keyv, keys: string[]): Promise<[T | null, boolean][]> {
+    const items = await cache.getMany<InternalCacheItem<T>>(keys);
+    const now = this.now();
+
+    return items.map((item) => {
+      let expired = true;
+      if (item) {
+        expired = item.expiredAfter < now;
+      }
+
+      return [item?.value ?? null, expired] as const;
+    });
   }
 
   private handleInFlight<T>(inflight: Map<string, Promise<any>>, key: string, fn: () => Promise<T>) {
@@ -99,5 +140,9 @@ export class TieredCacheLayer implements CacheLayer {
     inflight.set(key, promise);
 
     return promise;
+  }
+
+  private now() {
+    return Date.now();
   }
 }

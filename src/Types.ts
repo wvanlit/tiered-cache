@@ -11,8 +11,8 @@ export interface CacheLayer {
   get<T extends Cacheable>(key: string, allowExpired: boolean): Promise<T | null>;
   set<T extends Cacheable>(item: CacheItem<T>): Promise<void>;
 
-  getMany<T extends Cacheable>(...keys: string[]): Promise<(T | null)[]>;
-  setMany<T extends Cacheable>(...items: CacheItem<T>[]): Promise<void>;
+  getMany<T extends Cacheable>(keys: string[]): Promise<(T | null)[]>;
+  setMany<T extends Cacheable>(items: CacheItem<T>[]): Promise<void>;
 
   getOrSet<T extends Cacheable>(key: string, factory: () => Promise<T>): Promise<T>;
   getOrSetMany<T extends Cacheable>(keys: string[], factory: (missing: string[]) => Promise<T[]>): Promise<T[]>;

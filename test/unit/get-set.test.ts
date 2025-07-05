@@ -58,9 +58,18 @@ describe("TieredCacheLayer get/set tests", () => {
     expect(output).toMatchObject(input);
   });
 
-  it("falls back to memory cache when not in distributed cache", async () => {
+  it("uses memory cache when not in distributed cache", async () => {
     await sut.set({ key, value: input });
     await distributedCache.clear();
+
+    const output = await sut.get<typeof input>(key, false);
+
+    expect(output).toMatchObject(input);
+  });
+
+  it("uses distributed cache when not in memory cache", async () => {
+    await sut.set({ key, value: input });
+    await memoryCache.clear();
 
     const output = await sut.get<typeof input>(key, false);
 
