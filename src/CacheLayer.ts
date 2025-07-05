@@ -22,6 +22,10 @@ export class TieredCacheLayer implements CacheLayer {
 
     const [distributedItem, distributedExpired] = await this.getFromCache<T>(this.distributed, key);
     if (distributedItem && (!distributedExpired || allowExpired)) {
+      // Fill the memory cache so we don't have to go to the distributed cache every time
+      // If the distributed item is expired, we ensure the memory item is also expired
+      this.setInCache(this.memory, { key, value: distributedItem }, distributedExpired);
+
       return distributedItem;
     }
 
@@ -49,15 +53,13 @@ export class TieredCacheLayer implements CacheLayer {
     throw new Error("Method not implemented.");
   }
 
-  private setInCache<T extends Cacheable>(cache: Keyv, item: CacheItem<T>) {
+  private setInCache<T extends Cacheable>(cache: Keyv, item: CacheItem<T>, asExpired: boolean = false) {
     const isMemory = cache === this.memory;
     const setting = isMemory ? this.settings.ttl.memory : this.settings.ttl.distributed;
+    const now = this.now();
+    const expiredAfter = asExpired ? now : now + setting.soft * MS_IN_A_SEC;
 
-    return cache.set<InternalCacheItem<T>>(
-      item.key,
-      { value: item.value, expiredAfter: this.now() + setting.soft * MS_IN_A_SEC },
-      setting.strict * MS_IN_A_SEC,
-    );
+    return cache.set<InternalCacheItem<T>>(item.key, { value: item.value, expiredAfter }, setting.strict * MS_IN_A_SEC);
   }
 
   private now() {

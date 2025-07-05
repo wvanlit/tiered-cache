@@ -10,7 +10,7 @@
 - **TypeScript Support**: Fully typed for better development experience.
 - **Built on top of KeyV**: Utilizes KeyV to handle the low level caching API per cache layer.
 - **High Performance Features**: Because you don't want a dumb cache layer:
-  - **Batch Operations by default**: Supports batch get and set operations for better performance.
+  - **Batch Operations**: Supports batch get and set operations for better performance.
   - **Stampede Protection**: Prevents multiple similar requests from firing at the same time.
     - **Cache Level**: Does not send multiple requests to the distributed cache for the same key.
     - **Factory Level**: Prevents multiple requests to the factory function for the same key.

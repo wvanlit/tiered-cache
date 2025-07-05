@@ -10,3 +10,7 @@ The library is built on top of KeyV, a low-level caching API, and is designed to
 - npm
 - KeyV
 - Vitest
+
+## Code Style
+
+1. Do not use comments unless they are necessary to explain complex behaviour

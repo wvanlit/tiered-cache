@@ -1,7 +1,7 @@
 import Keyv from "keyv";
 import { describe, it, expect, vitest, beforeEach, beforeAll, afterAll } from "vitest";
 import { TieredCacheLayer } from "../../src/CacheLayer";
-import { CacheLayer } from "../../src/Types";
+import { CacheLayer, InternalCacheItem } from "../../src/Types";
 
 describe("TieredCacheLayer get/set tests", () => {
   beforeAll(() => vitest.useFakeTimers());
@@ -67,17 +67,50 @@ describe("TieredCacheLayer get/set tests", () => {
     expect(output).toMatchObject(input);
   });
 
+  it("puts item in memory cache when only in distributed cache", async () => {
+    await sut.set({ key, value: input });
+    await memoryCache.clear();
+
+    const output = await sut.get<typeof input>(key, false);
+
+    expect(output).toMatchObject(input);
+
+    const inMemory = await memoryCache.get<InternalCacheItem<typeof input>>(key);
+    expect(inMemory?.value).toBeDefined();
+    expect(inMemory?.value).toMatchObject(input);
+  });
+
+  it("puts item as expired in memory cache when item only in distributed cache as expired", async () => {
+    await sut.set({ key, value: input });
+    await memoryCache.clear();
+
+    vitest.advanceTimersByTime(1); // To prevent off-by-one
+    vitest.advanceTimersByTime((distributedStrictTtl - memoryStrictTtl) * 1000);
+
+    const output = await sut.get<typeof input>(key, true);
+
+    expect(output).toMatchObject(input);
+
+    const inMemory = await memoryCache.get<InternalCacheItem<typeof input>>(key);
+    expect(inMemory?.value).toBeDefined();
+    expect(inMemory?.value).toMatchObject(input);
+
+    // now == expired
+    expect(inMemory?.expiredAfter).toEqual(Date.now());
+  });
+
   it("will expire entry after strict ttl passed", async () => {
     await sut.set({ key, value: input });
 
     vitest.advanceTimersByTime(1); // To prevent off-by-one
     vitest.advanceTimersByTime(memoryStrictTtl * 1000);
 
-    const memoryExpired = await sut.get<typeof input>(key, false);
     const inMemory = await memoryCache.get(key);
-
-    expect(memoryExpired).toMatchObject(input);
     expect(inMemory).toBeUndefined();
+
+    // We check this after, because it will fill the memory cache with a new value
+    const memoryExpired = await sut.get<typeof input>(key, false);
+    expect(memoryExpired).toMatchObject(input);
 
     vitest.advanceTimersByTime((distributedStrictTtl - memoryStrictTtl) * 1000);
 
