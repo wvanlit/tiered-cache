@@ -123,10 +123,75 @@ export class TieredCacheLayer implements CacheLayer {
   }
 
   /**
-   * @todo implement getOrSetMany for batch cache-aside pattern.
+   * Get multiple values from cache or execute factory function for missing/expired keys.
+   * Supports soft/hard timeouts and background updates.
    */
-  getOrSetMany<T extends Cacheable>(keys: string[], factory: (missing: string[]) => Promise<T[]>): Promise<T[]> {
-    throw new Error("Method not implemented.");
+  async getOrSetMany<T extends Cacheable>(keys: string[], factory: (missing: string[]) => Promise<T[]>): Promise<T[]> {
+    const fromMemory = await this.getManyFromCache<T>(this.memory, keys);
+    const allFreshInMemory = fromMemory.every(([item, expired]) => item !== null && !expired);
+
+    if (allFreshInMemory) {
+      return fromMemory.map(([item]) => item!);
+    }
+
+    const batchKey = `batch:${keys.sort().join(",")}`;
+
+    return await this.handleInFlight(this.cacheInFlight, batchKey, async () => {
+      const fromDistributed = await this.getManyFromCache<T>(this.distributed, keys);
+
+      const missingKeys: string[] = [];
+      const staleValues: (T | null)[] = [];
+      const result: T[] = [];
+
+      for (let i = 0; i < keys.length; i++) {
+        const [memoryItem, memoryExpired] = fromMemory[i];
+        const [distributedItem, distributedExpired] = fromDistributed[i];
+
+        if (memoryItem && !memoryExpired) {
+          result[i] = memoryItem;
+          staleValues[i] = null;
+        } else if (distributedItem && !distributedExpired) {
+          result[i] = distributedItem;
+          staleValues[i] = null;
+          await this.setInCache(this.memory, { key: keys[i], value: distributedItem });
+        } else {
+          missingKeys.push(keys[i]);
+          staleValues[i] = memoryItem || distributedItem;
+        }
+      }
+
+      if (missingKeys.length === 0) {
+        return result;
+      }
+
+      const factoryResults = await this.executeBatchFactoryWithTimeout(
+        () => factory(missingKeys),
+        missingKeys,
+        staleValues,
+        keys,
+      );
+
+      const itemsToCache: CacheItem<T>[] = [];
+      let factoryIndex = 0;
+
+      for (let i = 0; i < keys.length; i++) {
+        if (result[i] === undefined) {
+          const factoryResult = factoryResults[factoryIndex++];
+          result[i] = factoryResult;
+          itemsToCache.push({ key: keys[i], value: factoryResult });
+        }
+      }
+
+      if (itemsToCache.length > 0) {
+        await this.setMany(itemsToCache);
+
+        if (this.settings.allowBackgroundUpdates && staleValues.some((v) => v !== null)) {
+          this.scheduleBatchBackgroundUpdate(missingKeys, factory);
+        }
+      }
+
+      return result;
+    });
   }
 
   /**
@@ -165,7 +230,7 @@ export class TieredCacheLayer implements CacheLayer {
 
     let expired = true;
     if (item) {
-      expired = item.expiredAfter < this.now();
+      expired = item.expiredAfter <= this.now();
     }
 
     return [item?.value ?? null, expired] as const;
@@ -178,7 +243,7 @@ export class TieredCacheLayer implements CacheLayer {
     return items.map((item) => {
       let expired = true;
       if (item) {
-        expired = item.expiredAfter < now;
+        expired = item.expiredAfter <= now;
       }
 
       return [item?.value ?? null, expired] as const;
@@ -308,6 +373,86 @@ export class TieredCacheLayer implements CacheLayer {
       try {
         const result = await factory();
         await this.set({ key, value: result });
+      } catch (error) {
+        // Silently ignore background update errors
+      }
+    });
+  }
+
+  /**
+   * Execute batch factory function with timeout protection.
+   */
+  private async executeBatchFactoryWithTimeout<T extends Cacheable>(
+    factory: () => Promise<T[]>,
+    missingKeys: string[],
+    staleValues: (T | null)[],
+    originalKeys: string[],
+  ): Promise<T[]> {
+    const softTimeout = this.settings.timeouts.soft;
+    const hardTimeout = this.settings.timeouts.strict;
+
+    const factoryPromise = factory();
+
+    // If we have any stale values and soft timeout is configured, race the factory against the soft timeout
+    const hasStaleValues = staleValues.some((v) => v !== null);
+    if (hasStaleValues && softTimeout > 0) {
+      const softTimeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error("Soft timeout exceeded")), softTimeout);
+      });
+
+      try {
+        return await Promise.race([factoryPromise, softTimeoutPromise]);
+      } catch (error) {
+        if (error instanceof Error && error.message === "Soft timeout exceeded") {
+          // Return stale values for the missing keys
+          const result: T[] = [];
+          let missingIndex = 0;
+
+          for (let i = 0; i < originalKeys.length; i++) {
+            if (missingKeys.includes(originalKeys[i])) {
+              const staleValue = staleValues[i];
+              if (staleValue !== null) {
+                result.push(staleValue);
+              } else {
+                throw error; // No stale value available, re-throw the timeout error
+              }
+              missingIndex++;
+            }
+          }
+
+          return result;
+        }
+        throw error;
+      }
+    }
+
+    // Apply hard timeout if configured
+    if (hardTimeout > 0) {
+      const hardTimeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error("Hard timeout exceeded")), hardTimeout);
+      });
+
+      return await Promise.race([factoryPromise, hardTimeoutPromise]);
+    }
+
+    return await factoryPromise;
+  }
+
+  /**
+   * Schedule a background update for multiple keys.
+   */
+  private scheduleBatchBackgroundUpdate<T extends Cacheable>(
+    keys: string[],
+    factory: (missing: string[]) => Promise<T[]>,
+  ): void {
+    setImmediate(async () => {
+      try {
+        const results = await factory(keys);
+        const itemsToCache: CacheItem<T>[] = results.map((value, index) => ({
+          key: keys[index],
+          value,
+        }));
+        await this.setMany(itemsToCache);
       } catch (error) {
         // Silently ignore background update errors
       }
