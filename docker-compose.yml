@@ -1,11 +1,21 @@
-version: '3.8'
 services:
   redis:
-    image: redis:7-alpine
+    image: redis:8-alpine
     ports:
-      - '6379:6379'
+      - "6379:6379"
     healthcheck:
-      test: [ 'CMD', 'redis-cli', 'ping' ]
+      test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 5s
       retries: 5
+  redisinsight:
+    image: redis/redisinsight:2.70
+    ports:
+      - "5540:5540"
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      - RI_REDIS_HOST=redis
+      - RI_DATABASE_MANAGEMENT=false
+    restart: unless-stopped
