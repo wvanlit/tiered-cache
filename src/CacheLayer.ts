@@ -16,6 +16,12 @@ export class TieredCacheLayer implements CacheLayer {
     this.distributed = distributed;
   }
 
+  /**
+   * Retrieve a single value by key.
+   * @param key cache key
+   * @param allowExpired return stale value if fresh miss and expired
+   * @description Delegates data fetching to batch getMany for consistent expiry and fallback behavior.
+   */
   async get<T extends Cacheable>(key: string, allowExpired: boolean): Promise<T | null> {
     const [memoryItem, memoryExpired] = await this.getFromCache<T>(this.memory, key);
     if (memoryItem && !memoryExpired) {
@@ -28,24 +34,9 @@ export class TieredCacheLayer implements CacheLayer {
       return memoryItem;
     }
 
-    const fetch = async () => {
-      const [distributedItem, distributedExpired] = await this.getFromCache<T>(this.distributed, key);
-      if (distributedItem && (!distributedExpired || allowExpired)) {
-        // Fill the memory cache so we don't have to go to the distributed cache every time
-        // If the distributed item is expired, we ensure the memory item is also expired
-        this.setInCache(this.memory, { key, value: distributedItem, expired: distributedExpired });
-
-        return distributedItem;
-      }
-
-      if (allowExpired && distributedExpired && memoryItem) {
-        return memoryItem;
-      }
-
-      return null;
-    };
-
-    return await this.handleInFlight(this.cacheInFlight, key, fetch);
+    return await this.handleInFlight(this.cacheInFlight, key, () =>
+      this.getMany([key], allowExpired).then((items) => items[0]),
+    );
   }
 
   async set<T extends Cacheable>(item: CacheItem<T>): Promise<void> {
@@ -69,46 +60,20 @@ export class TieredCacheLayer implements CacheLayer {
       return list;
     }, Array<string>());
 
+    // TODO: consider batching or de-duplicating in-flight batch requests to avoid N fetches per key
     // We don't protect getMany from in flight requests, as it will create a lot of promises (1 per key)
-    // TODO: is there a smart way to do this?
-    const di = await this.getManyFromCache<T>(this.distributed, missingKeys);
+    const distributedResults = await this.getManyFromCache<T>(this.distributed, missingKeys);
 
-    di.reverse();
+    const { result, toSetInMemory } = this.mergeBatchResults(
+      keys,
+      fromMemory,
+      missingKeys,
+      distributedResults,
+      allowExpired,
+    );
 
-    const result: (T | null)[] = [];
-    const toSet: CacheItem<T>[] = [];
-
-    for (let index = 0; index < fromMemory.length; index++) {
-      const [memoryItem, memoryExpired] = fromMemory[index];
-      if (!memoryExpired) {
-        result.push(memoryItem);
-        continue;
-      }
-
-      if (di.length) {
-        const [distributedItem, distributedExpired] = di.pop()!;
-        if (distributedItem) {
-          // Fill the memory cache so we don't have to go to the distributed cache every time
-          // If the distributed item is expired, we ensure the memory item is also expired
-          toSet.push({ key: keys[index], value: distributedItem, expired: distributedExpired });
-
-          if (!distributedExpired || allowExpired) {
-            result.push(distributedItem);
-            continue;
-          }
-        }
-      }
-
-      if (allowExpired && memoryItem) {
-        result.push(memoryItem);
-        continue;
-      }
-
-      result.push(null);
-    }
-
-    if (toSet.length) {
-      await this.setManyInCache(this.memory, toSet);
+    if (toSetInMemory.length) {
+      await this.setManyInCache(this.memory, toSetInMemory);
     }
 
     return result;
@@ -117,13 +82,24 @@ export class TieredCacheLayer implements CacheLayer {
   async setMany<T extends Cacheable>(items: CacheItem<T>[]): Promise<void> {
     await Promise.allSettled([this.setManyInCache(this.memory, items), this.setManyInCache(this.distributed, items)]);
   }
+
+  /**
+   * @todo implement getOrSet for cache-aside pattern.
+   */
   getOrSet<T extends Cacheable>(key: string, factory: () => Promise<T>): Promise<T> {
     throw new Error("Method not implemented.");
   }
+
+  /**
+   * @todo implement getOrSetMany for batch cache-aside pattern.
+   */
   getOrSetMany<T extends Cacheable>(keys: string[], factory: (missing: string[]) => Promise<T[]>): Promise<T[]> {
     throw new Error("Method not implemented.");
   }
 
+  /**
+   * Write an item with soft (stale-while-revalidate) and strict (absolute eviction) TTL.
+   */
   private setInCache<T extends Cacheable>(cache: Keyv, item: CacheItem<T>) {
     const isMemory = cache === this.memory;
     const setting = isMemory ? this.settings.ttl.memory : this.settings.ttl.distributed;
@@ -133,6 +109,9 @@ export class TieredCacheLayer implements CacheLayer {
     return cache.set<InternalCacheItem<T>>(item.key, { value: item.value, expiredAfter }, setting.strict * MS_IN_A_SEC);
   }
 
+  /**
+   * Batch write items with soft/strict TTL.
+   */
   private setManyInCache<T extends Cacheable>(cache: Keyv, items: CacheItem<T>[]) {
     const isMemory = cache === this.memory;
     const setting = isMemory ? this.settings.ttl.memory : this.settings.ttl.distributed;
@@ -174,6 +153,9 @@ export class TieredCacheLayer implements CacheLayer {
     });
   }
 
+  /**
+   * De-duplicate concurrent fetches for the same key to prevent stampedes.
+   */
   private handleInFlight<T>(inflight: Map<string, Promise<any>>, key: string, fn: () => Promise<T>) {
     if (inflight.has(key)) {
       return inflight.get(key);
@@ -188,5 +170,61 @@ export class TieredCacheLayer implements CacheLayer {
 
   private now() {
     return Date.now();
+  }
+
+  /**
+   * Combine memory and distributed batch results, enforce soft vs strict expiry, and collect items to back-fill into memory cache.
+   */
+  private mergeBatchResults<T extends Cacheable>(
+    keys: string[],
+    fromMemory: Array<[T | null, boolean]>,
+    missingKeys: string[],
+    distributedResults: Array<[T | null, boolean]>,
+    allowExpired: boolean,
+  ): { result: (T | null)[]; toSetInMemory: CacheItem<T>[] } {
+    const distributedResultsMap = new Map<string, [T | null, boolean]>();
+
+    missingKeys.forEach((key, idx) => {
+      distributedResultsMap.set(key, distributedResults[idx]);
+    });
+
+    const result: (T | null)[] = [];
+    const toSetInMemory: CacheItem<T>[] = [];
+
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
+      const [memoryItem, memoryExpired] = fromMemory[i];
+
+      if (!memoryExpired) {
+        result.push(memoryItem);
+        continue;
+      }
+
+      const dist = distributedResultsMap.get(key);
+
+      if (dist) {
+        const [distributedItem, distributedExpired] = dist;
+
+        if (distributedItem != null) {
+          // Fill the memory cache so we don't have to go to the distributed cache every time
+          // If the distributed item is expired, we ensure the memory item is also expired
+          toSetInMemory.push({ key, value: distributedItem, expired: distributedExpired });
+
+          if (!distributedExpired || allowExpired) {
+            result.push(distributedItem);
+            continue;
+          }
+        }
+      }
+
+      if (allowExpired && memoryItem != null) {
+        result.push(memoryItem);
+        continue;
+      }
+
+      result.push(null);
+    }
+
+    return { result, toSetInMemory };
   }
 }

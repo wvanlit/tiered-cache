@@ -23,6 +23,9 @@ describe("TieredCacheLayer stampede protection tests", () => {
     z: "hello",
   });
 
+  let resolveLazy!: (items: InternalCacheItem<typeof input>[]) => void;
+  const lazyGet = new Promise<InternalCacheItem<typeof input>[]>((res) => (resolveLazy = res));
+
   beforeEach(() => {
     memoryCache = new Keyv();
     // We're "mocking" the distributed cache using a memory cache
@@ -54,16 +57,14 @@ describe("TieredCacheLayer stampede protection tests", () => {
     await sut.set({ key, value: input });
     await memoryCache.clear();
 
-    let resolveLazy!: (item: InternalCacheItem<typeof input>) => void;
-    const lazyGet = new Promise<InternalCacheItem<typeof input>>((res) => (resolveLazy = res));
-    const getSpy = vitest.spyOn(distributedCache, "get").mockImplementation(() => lazyGet as any);
+    const getSpy = vitest.spyOn(distributedCache, "getMany").mockImplementation(() => lazyGet as any);
 
     // Parallel requests should cause "race condition"
     const p1 = sut.get<typeof input>(key, false);
     const p2 = sut.get<typeof input>(key, false);
     const p3 = sut.get<typeof input>(key, false);
 
-    resolveLazy({ value: input, expiredAfter: Date.now() + distributedSoftTtl * 1000 });
+    resolveLazy([{ value: input, expiredAfter: Date.now() + distributedSoftTtl * 1000 }]);
 
     const results = await Promise.all([p1, p2, p3]);
     expect(results).toMatchObject([input, input, input]);
@@ -79,9 +80,7 @@ describe("TieredCacheLayer stampede protection tests", () => {
     vitest.advanceTimersByTime(1); // To prevent off-by-one
     vitest.advanceTimersByTime(memorySoftTtl * 1000);
 
-    let resolveLazy!: (item: InternalCacheItem<typeof input>) => void;
-    const lazyGet = new Promise<InternalCacheItem<typeof input>>((res) => (resolveLazy = res));
-    const getSpy = vitest.spyOn(distributedCache, "get").mockImplementation(() => lazyGet as any);
+    const getSpy = vitest.spyOn(distributedCache, "getMany").mockImplementation(() => lazyGet as any);
 
     const p1 = sut.get<typeof input>(key, true);
 
@@ -95,8 +94,10 @@ describe("TieredCacheLayer stampede protection tests", () => {
     expect(await p3).toMatchObject(input);
 
     // p1 should not yet have been resolved
-    resolveLazy({ value: input, expiredAfter: Date.now() + distributedSoftTtl * 1000 });
+    resolveLazy([{ value: input, expiredAfter: Date.now() + distributedSoftTtl * 1000 }]);
 
     expect(await p1).toMatchObject(input);
+
+    expect(getSpy).toHaveBeenCalledTimes(1);
   });
 });
