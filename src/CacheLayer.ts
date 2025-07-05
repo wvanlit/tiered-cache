@@ -84,10 +84,42 @@ export class TieredCacheLayer implements CacheLayer {
   }
 
   /**
-   * @todo implement getOrSet for cache-aside pattern.
+   * Get value from cache or execute factory function if not found/expired.
+   * Supports soft/hard timeouts and background updates.
    */
-  getOrSet<T extends Cacheable>(key: string, factory: () => Promise<T>): Promise<T> {
-    throw new Error("Method not implemented.");
+  async getOrSet<T extends Cacheable>(key: string, factory: () => Promise<T>): Promise<T> {
+    const [memoryItem, memoryExpired] = await this.getFromCache<T>(this.memory, key);
+
+    if (memoryItem && !memoryExpired) {
+      return memoryItem;
+    }
+
+    // If we have an expired item in memory and we are already fetching, return the expired value
+    if (this.cacheInFlight.has(key) && memoryItem) {
+      return memoryItem;
+    }
+
+    return await this.handleInFlight(this.cacheInFlight, key, async () => {
+      const [distributedItem, distributedExpired] = await this.getFromCache<T>(this.distributed, key);
+
+      if (distributedItem && !distributedExpired) {
+        await this.setInCache(this.memory, { key, value: distributedItem });
+        return distributedItem;
+      }
+
+      // Execute factory with timeout protection
+      const result = await this.executeFactoryWithTimeout(factory, memoryItem || distributedItem);
+
+      // Cache the result
+      await this.set({ key, value: result });
+
+      // Background update if we have stale data and background updates are enabled
+      if (this.settings.allowBackgroundUpdates && (memoryItem || distributedItem)) {
+        this.scheduleBackgroundUpdate(key, factory);
+      }
+
+      return result;
+    });
   }
 
   /**
@@ -226,5 +258,59 @@ export class TieredCacheLayer implements CacheLayer {
     }
 
     return { result, toSetInMemory };
+  }
+
+  /**
+   * Execute factory function with timeout protection.
+   */
+  private async executeFactoryWithTimeout<T extends Cacheable>(
+    factory: () => Promise<T>,
+    staleValue: T | null,
+  ): Promise<T> {
+    const softTimeout = this.settings.timeouts.soft;
+    const hardTimeout = this.settings.timeouts.strict;
+
+    const factoryPromise = factory();
+
+    // If we have a stale value and soft timeout is configured, race the factory against the soft timeout
+    if (staleValue && softTimeout > 0) {
+      const softTimeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error("Soft timeout exceeded")), softTimeout);
+      });
+
+      try {
+        return await Promise.race([factoryPromise, softTimeoutPromise]);
+      } catch (error) {
+        if (error instanceof Error && error.message === "Soft timeout exceeded") {
+          return staleValue;
+        }
+        throw error;
+      }
+    }
+
+    // Apply hard timeout if configured
+    if (hardTimeout > 0) {
+      const hardTimeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error("Hard timeout exceeded")), hardTimeout);
+      });
+
+      return await Promise.race([factoryPromise, hardTimeoutPromise]);
+    }
+
+    return await factoryPromise;
+  }
+
+  /**
+   * Schedule a background update for a key.
+   */
+  private scheduleBackgroundUpdate<T extends Cacheable>(key: string, factory: () => Promise<T>): void {
+    setImmediate(async () => {
+      try {
+        const result = await factory();
+        await this.set({ key, value: result });
+      } catch (error) {
+        // Silently ignore background update errors
+      }
+    });
   }
 }
