@@ -22,7 +22,9 @@
 
 ## Batch Get flow
 
-The batch get flow is probably the most complex part of the cache, so here's a detailed explanation of how it works:
+The batch get flow is probably the most complex part of the cache.
+
+Here's a detailed diagram of how it works:
 
 ```mermaid
 flowchart TD
@@ -73,3 +75,5 @@ flowchart TD
 
     Merge --> Output
 ```
+
+Dotted lines indicate background operations that do not block the main flow.
