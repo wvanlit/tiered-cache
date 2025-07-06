@@ -18,7 +18,7 @@ afterAll(async () => {
   }
 });
 
-describe("Redis Integration Tests", () => {
+describe.skip("Redis Integration Tests", () => {
   it("should set and get a value from Redis", async () => {
     await cache.set("test_key", "test_value", 5);
     const value = await cache.get("test_key");

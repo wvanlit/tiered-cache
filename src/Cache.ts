@@ -79,10 +79,12 @@ export type CacheConfiguration = {
   factoryTimeout: CacheTimeout;
 };
 
-type CacheEntry<T extends Cacheable> = {
+export type CacheEntry<T extends Cacheable> = {
   value: T;
   freshUntil: UnixTimestamp;
 };
+
+const MS_IN_A_SEC = 1000;
 
 export default class MultiTieredCache implements Cache {
   private readonly config: CacheConfiguration;
@@ -109,9 +111,9 @@ export default class MultiTieredCache implements Cache {
     this.setBatchInCache(freshD, this.config.memory, true);
     this.setBatchInCache(staleD, this.config.memory, false);
 
-    // Misses need to be retrieved from the factory
+    // Stale/Missed keys need to be retrieved from the factory
     let fromFactory: Batch<T> | undefined;
-    if (factory && missD.length) {
+    if (factory && (staleD.size || missD.length)) {
       fromFactory = await this.__getFromFactory<T>(staleD, missD, factory);
 
       // Ensure new values are in both caches
@@ -119,15 +121,20 @@ export default class MultiTieredCache implements Cache {
     }
 
     // Merge all fresh values into a batch
-    return new Map([...freshM, ...freshD, ...(fromFactory ? fromFactory : [])]);
+    return new Map([
+      ...freshM,
+      ...freshD,
+      // We allow stale distributed values if we can't fetch new ones
+      ...(fromFactory ? fromFactory : staleD),
+    ]);
   }
 
-  async __getFromCache<T extends Cacheable>(cache: Keyv, keys: Key[]) {
+  private async __getFromCache<T extends Cacheable>(cache: Keyv, keys: Key[]) {
     const entries = await cache.getMany<CacheEntry<T>>(keys);
     return this.splitByState<T>(keys, entries);
   }
 
-  async __getFromDistributedCache<T extends Cacheable>(staleM: Batch<T>, missM: Key[]) {
+  private async __getFromDistributedCache<T extends Cacheable>(staleM: Batch<T>, missM: Key[]) {
     const keys = [...missM, ...staleM.keys()];
 
     /*
@@ -151,7 +158,7 @@ export default class MultiTieredCache implements Cache {
     };
   }
 
-  async __getFromFactory<T extends Cacheable>(
+  private async __getFromFactory<T extends Cacheable>(
     staleD: Batch<T>,
     missD: Key[],
     factory: (keys: Key[]) => Promise<Batch<T>>,
@@ -193,7 +200,11 @@ export default class MultiTieredCache implements Cache {
     await this.setBatchInCache(values, this.config.distributed, fresh);
   }
 
-  async setBatchInCache<T extends Cacheable>(values: Batch<T>, config: CacheLayerConfiguration, fresh: boolean) {
+  private async setBatchInCache<T extends Cacheable>(
+    values: Batch<T>,
+    config: CacheLayerConfiguration,
+    fresh: boolean,
+  ) {
     const now = this.now();
 
     const entries = values
@@ -236,27 +247,27 @@ export default class MultiTieredCache implements Cache {
     await this.distributedCache.clear();
   }
 
-  batchEntry<T extends Cacheable>(
+  private batchEntry<T extends Cacheable>(
     key: Key,
     value: T,
     now: UnixTimestamp,
     config: CacheLayerConfiguration,
     fresh = true,
   ): KeyvEntry {
-    const entry: CacheEntry<T> = { value, freshUntil: fresh ? now + config.ttl : now };
+    const entry: CacheEntry<T> = { value, freshUntil: fresh ? now + config.ttl * MS_IN_A_SEC : now };
 
     return {
       key,
       value: entry,
-      ttl: now + config.lifetime,
+      ttl: config.lifetime * MS_IN_A_SEC,
     };
   }
 
-  now() {
+  private now() {
     return Date.now();
   }
 
-  splitByState<T extends Cacheable>(
+  private splitByState<T extends Cacheable>(
     keys: Key[],
     entries: (CacheEntry<T> | undefined)[],
   ): { fresh: Batch<T>; stale: Batch<T>; miss: Key[] } {

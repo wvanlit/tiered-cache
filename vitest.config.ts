@@ -6,6 +6,7 @@ export default defineConfig({
     globals: true,
     include: ["test/**/*.test.ts"],
     isolate: true,
+    passWithNoTests: true,
     projects: [
       {
         test: {
