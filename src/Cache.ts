@@ -1,4 +1,5 @@
 import Keyv, { KeyvEntry } from "keyv";
+import { resolve } from "path";
 
 /**
  * Only JSON serialization compatible values
@@ -105,18 +106,10 @@ export default class MultiTieredCache implements Cache {
 
     const { freshD, staleD, missD } = await this.__getFromDistributedCache<T>(staleM, missM);
 
-    // Ensure distributed values are in the memory cache for performance & graceful fallback
-    // Not awaited to ensure it happens in the background
-    this.setBatchInCache(freshD, this.config.memory, true);
-    this.setBatchInCache(staleD, this.config.memory, false);
-
-    // Stale/Missed keys need to be retrieved from the factory
+    // stale and missed keys need to be retrieved from the factory
     let fromFactory: Batch<T> | undefined;
     if (factory && (staleD.size || missD.length)) {
       fromFactory = await this.__getFromFactory<T>(staleD, missD, factory);
-
-      // Ensure new values are in both caches
-      await this.setBatch(fromFactory, true);
     }
 
     // Merge all fresh values into a batch
@@ -147,21 +140,36 @@ export default class MultiTieredCache implements Cache {
         Fetch keys + put in stampede lock
     */
 
-    // TODO: Handle soft timeout (return staleM as stale, missM as miss) / strict timeout (throw exception)
-    const { fresh: freshD, stale: staleD, miss: missD } = await this.__getFromCache<T>(this.distributedCache, keys);
+    const result = await this.withTimeout(
+      () => this.__getFromCache<T>(this.distributedCache, keys),
+      async (distributedResults) => {
+        // Ensure distributed values are in the memory cache for performance & graceful fallback
+        // Not awaited to ensure it happens in the background
+        this.setBatchInCache(distributedResults.fresh, this.config.memory, true);
+        this.setBatchInCache(distributedResults.stale, this.config.memory, false);
+      },
+      this.config.distributedTimeout,
+      // Skip soft timeout if we have missing keys
+      missM.length > 0,
+    );
 
-    return {
-      freshD,
-      staleD,
-      missD,
-    };
+    // On timeout, return stale as stale - we'd rather return something than nothing
+    if (result === "timeout") {
+      return {
+        freshD: new Map(),
+        staleD: staleM,
+        missD: missM,
+      };
+    }
+
+    return { freshD: result.fresh, staleD: result.stale, missD: result.miss };
   }
 
   private async __getFromFactory<T extends Cacheable>(
     staleD: Batch<T>,
     missD: Key[],
     factory: (keys: Key[]) => Promise<Batch<T>>,
-  ) {
+  ): Promise<Batch<T>> {
     const keys = [...missD, ...staleD.keys()];
 
     /*
@@ -176,9 +184,22 @@ export default class MultiTieredCache implements Cache {
         Fetch keys + put in stampede lock
     */
 
-    // TODO: Handle soft timeout (return staleD as stale, missD as miss) / strict timeout (throw exception)
+    const result = await this.withTimeout(
+      () => factory(keys),
+      async (results) => {
+        await this.setBatch(results, true);
+      },
+      this.config.factoryTimeout,
+      // Skip soft timeout if we have missing keys
+      missD.length > 0,
+    );
 
-    return await factory(keys);
+    // On timeout, return stale as stale - we'd rather return something than nothing
+    if (result === "timeout") {
+      return staleD;
+    }
+
+    return result;
   }
 
   async get<T extends Cacheable>(key: Key, factory?: () => Promise<T>): Promise<T> {
@@ -283,5 +304,37 @@ export default class MultiTieredCache implements Cache {
       stale,
       miss,
     };
+  }
+
+  private withTimeout<T>(
+    action: () => Promise<T>,
+    whenNotTimedOut: (result: T) => Promise<void>,
+    timeout: CacheTimeout,
+    skipSoftTimeout: boolean,
+  ): Promise<T | "timeout"> {
+    const factoryPromise = new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => reject("strict timeout"), timeout.strict * MS_IN_A_SEC);
+      
+      action()
+        .then(async (result) => {
+          clearTimeout(timer);
+          await whenNotTimedOut(result);
+          resolve(result);
+        })
+        .catch((err) => {
+          clearTimeout(timer);
+          reject(err);
+        });
+    });
+
+    if (skipSoftTimeout) {
+      return factoryPromise;
+    }
+
+    const softTimeout: Promise<"timeout"> = new Promise<"timeout">((resolve) =>
+      setTimeout(() => resolve("timeout"), timeout.soft * MS_IN_A_SEC),
+    );
+
+    return Promise.race([factoryPromise, softTimeout]);
   }
 }

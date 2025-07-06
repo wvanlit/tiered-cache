@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vitest } from "vitest";
-import Keyv from "keyv";
-import MultiTieredCache, { CacheEntry, Key } from "../../src/Cache";
+import Keyv, { StoredDataRaw } from "keyv";
+import MultiTieredCache, { CacheEntry, Key, Seconds } from "../../src/Cache";
 
 describe("MultiTieredCache Tests", () => {
   let memoryCache: Keyv;
@@ -10,16 +10,16 @@ describe("MultiTieredCache Tests", () => {
 
   const MS_IN_A_SEC = 1000;
 
-  const ttlM = 0.5;
+  const ttlM = 5;
   const ttlM_ms = ttlM * MS_IN_A_SEC;
 
-  const lifetimeM = 1;
+  const lifetimeM = 10;
   const lifetimeM_ms = lifetimeM * MS_IN_A_SEC;
 
-  const ttlD = 2;
+  const ttlD = 20;
   const ttlD_ms = ttlD * MS_IN_A_SEC;
 
-  const lifetimeD = 4;
+  const lifetimeD = 40;
   const lifetimeD_ms = lifetimeD * MS_IN_A_SEC;
 
   const timeoutSoftD = 0.25;
@@ -95,7 +95,7 @@ describe("MultiTieredCache Tests", () => {
       it("fetches stale data from distributed cache", async () => {
         await vitest.advanceTimersByTimeAsync(lifetimeM_ms);
 
-        await ensureNotInCache(keys, memoryCache);
+        await expectCacheEntriesDoNotExist(keys, memoryCache);
 
         const results = await sut.getBatch(keys);
 
@@ -105,7 +105,7 @@ describe("MultiTieredCache Tests", () => {
       it("puts fresh data from distributed cache into memory cache", async () => {
         await vitest.advanceTimersByTimeAsync(lifetimeM_ms);
 
-        await ensureNotInCache(keys, memoryCache);
+        await expectCacheEntriesDoNotExist(keys, memoryCache);
         await sut.getBatch(keys);
 
         await expectCacheEntriesFresh(keys, memoryCache);
@@ -114,7 +114,7 @@ describe("MultiTieredCache Tests", () => {
       it("puts stale data from distributed cache into memory cache as stale", async () => {
         await vitest.advanceTimersByTimeAsync(ttlD_ms);
 
-        await ensureNotInCache(keys, memoryCache);
+        await expectCacheEntriesDoNotExist(keys, memoryCache);
         await sut.getBatch(keys);
 
         await expectCacheEntriesStaleAtCurrentTime(keys, memoryCache);
@@ -123,8 +123,8 @@ describe("MultiTieredCache Tests", () => {
       it("does not return missing keys", async () => {
         await vitest.advanceTimersByTimeAsync(lifetimeD_ms);
 
-        await ensureNotInCache(keys, memoryCache);
-        await ensureNotInCache(keys, distributedCache);
+        await expectCacheEntriesDoNotExist(keys, memoryCache);
+        await expectCacheEntriesDoNotExist(keys, distributedCache);
 
         const results = await sut.getBatch(keys);
 
@@ -143,7 +143,7 @@ describe("MultiTieredCache Tests", () => {
         await vitest.advanceTimersByTimeAsync(ttlM_ms);
         await distributedCache.clear();
 
-        await ensureNotInCache(keys, distributedCache);
+        await expectCacheEntriesDoNotExist(keys, distributedCache);
 
         const results = await sut.getBatch(keys);
 
@@ -191,8 +191,8 @@ describe("MultiTieredCache Tests", () => {
       it("uses factory when missing keys", async () => {
         await vitest.advanceTimersByTimeAsync(lifetimeD_ms);
 
-        await ensureNotInCache(keys, memoryCache);
-        await ensureNotInCache(keys, distributedCache);
+        await expectCacheEntriesDoNotExist(keys, memoryCache);
+        await expectCacheEntriesDoNotExist(keys, distributedCache);
 
         let factoryResult = new Map();
 
@@ -296,7 +296,7 @@ describe("MultiTieredCache Tests", () => {
       it("removes entries from cache when exactly at lifetime boundary", async () => {
         await vitest.advanceTimersByTimeAsync(lifetimeM_ms);
 
-        await ensureNotInCache(keys, memoryCache);
+        await expectCacheEntriesDoNotExist(keys, memoryCache);
       });
 
       it("handles mixed timing states in distributed cache at TTL boundary", async () => {
@@ -489,23 +489,254 @@ describe("MultiTieredCache Tests", () => {
     });
   });
 
-  describe("when stampeding distributed cache", () => {
+  describe.skip("when stampeding distributed cache", () => {
     // Test stampede protection on the distributed cache
   });
 
-  describe("when distributed cache times out", () => {
-    // Test timeouts (soft/strict) on the distributed cache
-  });
-
-  describe("when stampeding factory", () => {
+  describe.skip("when stampeding factory", () => {
     // Test stampede proteciton on the factory method
   });
+
+  describe("when distributed cache times out", () => {
+    // Test timeouts (soft/strict) on the distributed cach
+    const inputs: { [key: string]: Input } = {
+      "#1": { name: "Case #1", count: 2, values: [true, false] },
+      "#2": { name: "Case #2", count: 3, values: [false, true, false] },
+    };
+
+    const keys = Object.keys(inputs);
+    const inputBatch = new Map(Object.entries(inputs));
+
+    let delayedGetMany: (keys: Key[], delay: Seconds) => Promise<StoredDataRaw<unknown>[]>;
+
+    beforeEach(async () => {
+      await sut.setBatch(inputBatch);
+      await vitest.advanceTimersByTimeAsync(1);
+
+      const originalGetMany = distributedCache.getMany;
+      delayedGetMany = (keys: Key[], delay: Seconds) => {
+        return new Promise((resolve) => setTimeout(resolve, delay * MS_IN_A_SEC)).then(() =>
+          originalGetMany.call(distributedCache, keys),
+        );
+      };
+    });
+
+    it("returns stale memory data when distributed cache soft timeout occurs", async () => {
+      // Make memory cache stale so it needs to check distributed cache
+      await vitest.advanceTimersByTimeAsync(ttlM_ms);
+      await expectCacheEntriesStale(keys, memoryCache);
+
+      // Mock distributed cache to be slow (exceeds soft timeout)
+      distributedCache.getMany = vitest.fn().mockImplementation((k) => delayedGetMany(k, timeoutSoftD + 0.01));
+
+      const action = sut.getBatch(keys);
+
+      await advanceSeconds(timeoutSoftD);
+
+      const results = await action;
+
+      expect(results).toMatchObject(inputBatch);
+      expect(distributedCache.getMany).toHaveBeenCalledWith(keys);
+      expect(distributedCache.getMany).toHaveResolvedTimes(0);
+
+      // Memory cache should still be stale, because it was not updated
+      await expectCacheEntriesStale(keys, memoryCache);
+    });
+
+    it("waits when distributed cache soft timeout occurs without stale data", async () => {
+      // Make memory cache expire so it does not have anything stale
+      await advanceSeconds(lifetimeM);
+
+      // Mock distributed cache to be slow (exceeds soft timeout)
+      distributedCache.getMany = vitest.fn().mockImplementation((k) => delayedGetMany(k, timeoutSoftD + 0.1));
+
+      const action = sut.getBatch(keys);
+
+      await advanceSeconds(timeoutSoftD);
+
+      // We should still be waiting
+      expect(distributedCache.getMany).toHaveResolvedTimes(0);
+
+      await advanceSeconds(0.1);
+
+      const results = await action;
+
+      // Should return stale data from memory cache instead of waiting for distributed cache
+      expect(results).toMatchObject(inputBatch);
+      expect(distributedCache.getMany).toHaveBeenCalledWith(keys);
+      expect(distributedCache.getMany).toHaveResolvedTimes(1);
+
+      // Memory cache should still be stale, because it was not updated
+      await expectCacheEntriesFresh(keys, memoryCache);
+    });
+
+    it("updates cache in the background with values after soft timeout", async () => {
+      // Make memory cache stale so it needs to check distributed cache
+      await vitest.advanceTimersByTimeAsync(ttlM_ms);
+      await expectCacheEntriesStale(keys, memoryCache);
+
+      // Mock distributed cache to be slow (exceeds soft timeout)
+      const extraTime = 0.1;
+      distributedCache.getMany = vitest.fn().mockImplementation((k) => delayedGetMany(k, timeoutSoftD + extraTime));
+
+      const action = sut.getBatch(keys);
+
+      await advanceSeconds(timeoutSoftD);
+
+      const results = await action;
+
+      // Should return stale data from memory cache instead of waiting for distributed cache
+      expect(results).toMatchObject(inputBatch);
+
+      // Memory cache should still be stale, because it was not updated
+      await expectCacheEntriesStale(keys, memoryCache);
+      expect(distributedCache.getMany).toHaveResolvedTimes(0);
+
+      // Wait the extra time
+      await advanceSeconds(extraTime);
+
+      expect(distributedCache.getMany).toHaveResolvedTimes(1);
+      await expectCacheEntriesFresh(keys, memoryCache);
+    });
+
+    it("throws when distributed cache strict timeout occurs without stale data", async () => {
+      // Make memory cache expire so it does not have anything stale
+      await advanceSeconds(lifetimeM);
+
+      // Mock distributed cache to be slow (exceeds soft timeout)
+      distributedCache.getMany = vitest.fn().mockImplementation((k) => delayedGetMany(k, timeoutStrictD + 0.1));
+
+      const action = sut.getBatch(keys);
+
+      await advanceSeconds(timeoutStrictD);
+
+      // We should still be waiting
+      expect(distributedCache.getMany).toHaveResolvedTimes(0);
+
+      await advanceSeconds(0.1);
+
+      await expect(action).rejects.toBe("strict timeout");
+
+      // Memory cache should still be empty, because it was not updated
+      await expectCacheEntriesDoNotExist(keys, memoryCache);
+    });
+  });
+
   describe("when factory times out", () => {
-    // Test timeouts (soft/strict) on the factory method
+    const inputs: { [key: string]: Input } = {
+      "#1": { name: "Case #1", count: 2, values: [true, false] },
+      "#2": { name: "Case #2", count: 3, values: [false, true, false] },
+    };
+
+    const keys = Object.keys(inputs);
+    const inputBatch = new Map(Object.entries(inputs));
+
+    let delayedFactory: (keys: Key[], delay: Seconds) => Promise<Map<Key, Input>>;
+    let originalFactory: (keys: Key[]) => Promise<Map<Key, Input>>;
+
+    beforeEach(async () => {
+      // Stale memory cache and clear distributed to force factory usage
+      await sut.setBatch(inputBatch);
+      await vitest.advanceTimersByTimeAsync(1);
+      await advanceSeconds(ttlM);
+
+      originalFactory = async (factoryKeys: Key[]) => {
+        const result = new Map<Key, Input>();
+        factoryKeys.forEach((k) => result.set(k, inputs[k]));
+        return result;
+      };
+      delayedFactory = (ks, delay) =>
+        new Promise((resolve) => setTimeout(resolve, delay * MS_IN_A_SEC)).then(() => originalFactory(ks));
+    });
+
+    it("returns stale distributed data when soft timeout occurs", async () => {
+      // Expire distributed cache TTL so entries become stale
+      await advanceSeconds(ttlD);
+
+      // Mock factory to be slow (exceeds soft timeout)
+      const factoryFn = vitest.fn().mockImplementation((ks) => delayedFactory(ks, timeoutSoftF + 0.1));
+      const action = sut.getBatch(keys, factoryFn);
+
+      // Advance to soft timeout
+      await advanceSeconds(timeoutSoftF);
+
+      // Should return stale distributed data
+      const results = await action;
+      expect(results).toMatchObject(inputBatch);
+      expect(factoryFn).toHaveBeenCalledWith(keys);
+      expect(factoryFn).toHaveResolvedTimes(0);
+
+      // Memory cache should still reflect stale data
+      await expectCacheEntriesStale(keys, memoryCache);
+    });
+
+    it("waits when soft timeout occurs without stale data", async () => {
+      // Clear distributed cache to force missing keys and skip soft timeout
+      await distributedCache.clear();
+
+      // Mock factory to be slow (exceeds soft timeout)
+      const factoryFn = vitest.fn().mockImplementation((ks) => delayedFactory(ks, timeoutSoftF + 0.1));
+      const action = sut.getBatch(keys, factoryFn);
+
+      // Advance to soft timeout
+      await advanceSeconds(timeoutSoftF);
+      // Should still be waiting because skipSoftTimeout=true
+      expect(factoryFn).toHaveResolvedTimes(0);
+
+      // Advance a bit more to complete factory
+      await advanceSeconds(0.1);
+      const results = await action;
+
+      expect(results).toMatchObject(inputBatch);
+      expect(factoryFn).toHaveBeenCalledWith(keys);
+
+      // Memory cache should have been updated with fresh entries
+      await expectCacheEntriesFresh(keys, memoryCache);
+    });
+
+    it("updates cache in the background with values after soft timeout", async () => {
+      // Expire distributed cache TTL so entries become stale
+      await advanceSeconds(ttlD);
+
+      const extraTime = 0.1;
+      // Mock factory to be slow by extraTime
+      const factoryFn = vitest.fn().mockImplementation((ks) => delayedFactory(ks, timeoutSoftF + extraTime));
+      const action = sut.getBatch(keys, factoryFn);
+
+      // Advance to soft timeout and get fallback stale data
+      await advanceSeconds(timeoutSoftF);
+      const results = await action;
+      expect(results).toMatchObject(inputBatch);
+      expect(factoryFn).toHaveResolvedTimes(0);
+
+      // Memory stays stale initially
+      await expectCacheEntriesStale(keys, memoryCache);
+
+      // Wait extra time for factory to resolve and update cache in background
+      await advanceSeconds(extraTime);
+      expect(factoryFn).toHaveResolvedTimes(1);
+
+      // Memory cache should now have fresh entries
+      await expectCacheEntriesFresh(keys, memoryCache);
+    });
+
+    it("throws when factory strict timeout occurs without stale data in distributed cache", async () => {
+      await distributedCache.clear();
+      await advanceSeconds(lifetimeM - ttlM);
+
+      const factoryFn = vitest.fn().mockImplementation((ks: Key[]) => delayedFactory(ks, timeoutStrictF + 0.1));
+      const action = sut.getBatch(keys, factoryFn);
+
+      await advanceSeconds(timeoutStrictF);
+      await advanceSeconds(0.1);
+      await expect(action).rejects.toBe("strict timeout");
+
+      await expectCacheEntriesDoNotExist(keys, memoryCache);
+    });
   });
 
   // Helper functions to reduce repetition
-  async function ensureNotInCache(keys: Key[], cache: Keyv) {
+  async function expectCacheEntriesDoNotExist(keys: Key[], cache: Keyv) {
     const valuesFromCache = await cache.getMany(keys, { raw: true });
     expect(valuesFromCache).toMatchObject(new Array(keys.length).map((_) => undefined));
   }
@@ -535,5 +766,9 @@ describe("MultiTieredCache Tests", () => {
     const entries = await cache.getMany<CacheEntry<Input>>(keys);
     expect(entries.every((e) => e !== undefined)).toBe(true);
     expect(entries.every((e) => e!.freshUntil === Date.now())).toBe(true);
+  }
+
+  function advanceSeconds(s: Seconds) {
+    return vitest.advanceTimersByTimeAsync(s * MS_IN_A_SEC);
   }
 });
