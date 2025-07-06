@@ -28,13 +28,14 @@ export interface Cache {
 }
 
 export type Seconds = number;
+export type UnixTimestamp = number;
 
 /**
  * We use 2 types of timeouts.
  * A soft timeout returns stale data after it has been passed.
  * A strict timeout throws an exception after it has been passed.
  */
-export type Timeout = {
+export type CacheTimeout = {
   soft: Seconds;
   strict: Seconds;
 };
@@ -68,43 +69,83 @@ export type CacheConfiguration = {
   distributed: CacheLayerConfiguration;
 
   /**
-   * Time out applied to getting data from the distributed cache
+   * Timeouts applied to getting data from the distributed cache
    */
-  distributedTimeout: Timeout;
+  distributedTimeout: CacheTimeout;
 
   /**
-   * Time out applied to getting fresh data from a factory method
+   * Timeouts applied to getting fresh data from a factory method
    */
-  factoryTimeout: Timeout;
+  factoryTimeout: CacheTimeout;
+};
+
+type CacheEntry<T extends Cacheable> = {
+  value: T;
+  freshUntil: UnixTimestamp;
 };
 
 export default class MultiTieredCache implements Cache {
-  get<T extends Cacheable>(key: Key, factory?: () => Promise<T>): Promise<T> | Promise<T> {
-    throw new Error("Method not implemented.");
+  private readonly config: CacheConfiguration;
+  private readonly memoryCache: Keyv;
+  private readonly distributedCache: Keyv;
+
+  constructor(config: CacheConfiguration) {
+    this.config = config;
+
+    this.memoryCache = config.memory.cache;
+    this.distributedCache = config.distributed.cache;
   }
+
+  async get<T extends Cacheable>(key: Key, factory?: () => Promise<T>): Promise<T> {
+    const batchFactory = factory ? async () => new Map([[key, await factory()]]) : undefined;
+
+    const v = await this.getBatch([key], batchFactory);
+
+    // We assume all input keys are always returned in the batch
+    return v.get(key)!;
+  }
+
   getBatch<T extends Cacheable>(keys: Key[], factory?: (keys: Key[]) => Promise<Batch<T>>): Promise<Batch<T>> {
     throw new Error("Method not implemented.");
   }
 
   set<T extends Cacheable>(key: Key, value: T): Promise<void> {
-    throw new Error("Method not implemented.");
+    return this.setBatch(new Map([[key, value]]));
   }
+
   setBatch<T extends Cacheable>(values: Batch<T>): Promise<void> {
     throw new Error("Method not implemented.");
   }
-  has(key: Key): Promise<boolean> {
-    throw new Error("Method not implemented.");
+
+  async has(key: Key): Promise<boolean> {
+    return (await this.memoryCache.has(key)) || (await this.distributedCache.has(key));
   }
-  hasBatch(keys: Key[]): Promise<Batch<boolean>> {
-    throw new Error("Method not implemented.");
+
+  async hasBatch(keys: Key[]): Promise<Batch<boolean>> {
+    const inMemory = await this.memoryCache.hasMany(keys);
+    const inDistributed = await this.distributedCache.hasMany(keys);
+
+    const result = new Map();
+
+    for (let i = 0; i < keys.length; i++) {
+      result.set(keys[i], inMemory[i] || inDistributed[i]);
+    }
+
+    return result;
   }
-  delete(key: Key): Promise<void> {
-    throw new Error("Method not implemented.");
+
+  async delete(key: Key): Promise<void> {
+    await this.memoryCache.delete(key);
+    await this.distributedCache.delete(key);
   }
-  deleteBatch(keys: Key[]): Promise<void> {
-    throw new Error("Method not implemented.");
+
+  async deleteBatch(keys: Key[]): Promise<void> {
+    await this.memoryCache.deleteMany(keys);
+    await this.distributedCache.deleteMany(keys);
   }
-  clear(): Promise<void> {
-    throw new Error("Method not implemented.");
+
+  async clear(): Promise<void> {
+    await this.memoryCache.clear();
+    await this.distributedCache.clear();
   }
 }
