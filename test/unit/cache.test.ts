@@ -1,8 +1,10 @@
-import { describe, it, expect, beforeEach, vitest } from "vitest";
-import Keyv, { StoredDataRaw } from "keyv";
-import MultiTieredCache, { CacheEntry, Key, Seconds } from "../../src/Cache";
+import { describe, it, expect, beforeEach, vitest } from 'vitest';
+import type { StoredDataRaw } from 'keyv';
+import Keyv from 'keyv';
+import type { CacheEntry, Key, Seconds } from '../../src/Cache';
+import MultiTieredCache from '../../src/Cache';
 
-describe("MultiTieredCache Tests", () => {
+describe('MultiTieredCache Tests', () => {
   let memoryCache: Keyv;
   let distributedCache: Keyv;
 
@@ -36,8 +38,8 @@ describe("MultiTieredCache Tests", () => {
   beforeEach(() => {
     vitest.useFakeTimers();
 
-    memoryCache = new Keyv(new Map(), { namespace: "memory" });
-    distributedCache = new Keyv(new Map(), { namespace: "distributed" });
+    memoryCache = new Keyv(new Map(), { namespace: 'memory' });
+    distributedCache = new Keyv(new Map(), { namespace: 'distributed' });
 
     sut = new MultiTieredCache({
       memory: {
@@ -62,11 +64,11 @@ describe("MultiTieredCache Tests", () => {
   });
 
   // Test get / getBatch (no timeouts/stampede)
-  describe("when getting values", () => {
+  describe('when getting values', () => {
     const inputs: { [key: string]: Input } = {
-      "#1": { name: "Case #1", count: 2, values: [true, false] },
-      "#2": { name: "Case #2", count: 3, values: [false, true, false] },
-      "#3": { name: "Case #3", count: 0, values: [] },
+      '#1': { name: 'Case #1', count: 2, values: [true, false] },
+      '#2': { name: 'Case #2', count: 3, values: [false, true, false] },
+      '#3': { name: 'Case #3', count: 0, values: [] },
     };
 
     const keys = Object.keys(inputs);
@@ -83,16 +85,16 @@ describe("MultiTieredCache Tests", () => {
       await vitest.advanceTimersByTimeAsync(1);
     });
 
-    describe("without factory", () => {
-      it("gets fresh data from memory", async () => {
-        distributedCache.clear();
+    describe('without factory', () => {
+      it('gets fresh data from memory', async () => {
+        await distributedCache.clear();
 
         const results = await sut.getBatch(keys);
 
         expect(results).toMatchObject(inputBatch);
       });
 
-      it("fetches stale data from distributed cache", async () => {
+      it('fetches stale data from distributed cache', async () => {
         await vitest.advanceTimersByTimeAsync(lifetimeM_ms);
 
         await expectCacheEntriesDoNotExist(keys, memoryCache);
@@ -102,7 +104,7 @@ describe("MultiTieredCache Tests", () => {
         expect(results).toMatchObject(inputBatch);
       });
 
-      it("puts fresh data from distributed cache into memory cache", async () => {
+      it('puts fresh data from distributed cache into memory cache', async () => {
         await vitest.advanceTimersByTimeAsync(lifetimeM_ms);
 
         await expectCacheEntriesDoNotExist(keys, memoryCache);
@@ -111,7 +113,7 @@ describe("MultiTieredCache Tests", () => {
         await expectCacheEntriesFresh(keys, memoryCache);
       });
 
-      it("puts stale data from distributed cache into memory cache as stale", async () => {
+      it('puts stale data from distributed cache into memory cache as stale', async () => {
         await vitest.advanceTimersByTimeAsync(ttlD_ms);
 
         await expectCacheEntriesDoNotExist(keys, memoryCache);
@@ -120,7 +122,7 @@ describe("MultiTieredCache Tests", () => {
         await expectCacheEntriesStaleAtCurrentTime(keys, memoryCache);
       });
 
-      it("does not return missing keys", async () => {
+      it('does not return missing keys', async () => {
         await vitest.advanceTimersByTimeAsync(lifetimeD_ms);
 
         await expectCacheEntriesDoNotExist(keys, memoryCache);
@@ -131,7 +133,7 @@ describe("MultiTieredCache Tests", () => {
         expect(results).toMatchObject(new Map());
       });
 
-      it("returns stale data when both memory and distributed caches are stale", async () => {
+      it('returns stale data when both memory and distributed caches are stale', async () => {
         await vitest.advanceTimersByTimeAsync(ttlD_ms);
 
         const results = await sut.getBatch(keys);
@@ -139,7 +141,7 @@ describe("MultiTieredCache Tests", () => {
         expect(results).toMatchObject(inputBatch);
       });
 
-      it("does not return data when memory is stale and distributed cache is missing", async () => {
+      it('does not return data when memory is stale and distributed cache is missing', async () => {
         await vitest.advanceTimersByTimeAsync(ttlM_ms);
         await distributedCache.clear();
 
@@ -150,7 +152,7 @@ describe("MultiTieredCache Tests", () => {
         expect(results).toMatchObject(new Map());
       });
 
-      it("fetches fresh data from distributed cache when memory cache is missing and distributed cache is fresh", async () => {
+      it('fetches fresh data from distributed cache when memory cache is missing and distributed cache is fresh', async () => {
         await memoryCache.clear();
 
         const results = await sut.getBatch(keys);
@@ -158,7 +160,7 @@ describe("MultiTieredCache Tests", () => {
         expect(results).toMatchObject(inputBatch);
       });
 
-      it("fetches fresh data from distributed cache when memory is stale and distributed cache is fresh", async () => {
+      it('fetches fresh data from distributed cache when memory is stale and distributed cache is fresh', async () => {
         await vitest.advanceTimersByTimeAsync(ttlM_ms);
 
         await expectCacheEntriesStale(keys, memoryCache);
@@ -170,7 +172,7 @@ describe("MultiTieredCache Tests", () => {
         await expectCacheEntriesFreshWithTTL(keys, memoryCache, ttlM_ms);
       });
 
-      it("returns only available keys in a mixed batch", async () => {
+      it('returns only available keys in a mixed batch', async () => {
         await memoryCache.delete(keys[1]);
         await memoryCache.delete(keys[2]);
         await distributedCache.delete(keys[2]);
@@ -187,19 +189,19 @@ describe("MultiTieredCache Tests", () => {
       });
     });
 
-    describe("with factory", () => {
-      it("uses factory when missing keys", async () => {
+    describe('with factory', () => {
+      it('uses factory when missing keys', async () => {
         await vitest.advanceTimersByTimeAsync(lifetimeD_ms);
 
         await expectCacheEntriesDoNotExist(keys, memoryCache);
         await expectCacheEntriesDoNotExist(keys, distributedCache);
 
-        let factoryResult = new Map();
+        const factoryResult = new Map();
 
         const results = await sut.getBatch(keys, async (factoryKeys) => {
           expect(factoryKeys).toMatchObject(keys);
 
-          factoryKeys.forEach((k) => factoryResult.set(k, "12345"));
+          factoryKeys.forEach((k) => factoryResult.set(k, '12345'));
 
           return factoryResult;
         });
@@ -207,16 +209,16 @@ describe("MultiTieredCache Tests", () => {
         expect(results).toMatchObject(factoryResult);
       });
 
-      it("does not return stale data when distributed caches is stale and factory does not return key in batch", async () => {
+      it('does not return stale data when distributed caches is stale and factory does not return key in batch', async () => {
         await vitest.advanceTimersByTimeAsync(ttlD_ms);
 
-        let factoryResult = new Map();
+        const factoryResult = new Map();
 
         const results = await sut.getBatch(keys, async (factoryKeys) => {
           expect(factoryKeys).toMatchObject(keys);
 
           // Return nothing except first value
-          factoryResult.set(keys[0], "only return value");
+          factoryResult.set(keys[0], 'only return value');
 
           return factoryResult;
         });
@@ -224,12 +226,12 @@ describe("MultiTieredCache Tests", () => {
         expect(results).toMatchObject(factoryResult);
       });
 
-      it("fetches only missing keys in a mixed batch", async () => {
+      it('fetches only missing keys in a mixed batch', async () => {
         await memoryCache.delete(keys[1]);
         await memoryCache.delete(keys[2]);
         await distributedCache.delete(keys[2]);
 
-        const factoryValue: Input = { name: "Factory#1", count: 42, values: [true] };
+        const factoryValue: Input = { name: 'Factory#1', count: 42, values: [true] };
         const results = await sut.getBatch(keys, async (factoryKeys) => {
           expect(factoryKeys).toMatchObject([keys[2]]);
 
@@ -246,25 +248,25 @@ describe("MultiTieredCache Tests", () => {
       });
     });
 
-    describe("single-key get()", () => {
-      it("returns cached value with get() when present in memory", async () => {
+    describe('single-key get()', () => {
+      it('returns cached value with get() when present in memory', async () => {
         const scalar = await sut.get(keys[0]);
         expect(scalar).toEqual(inputs[keys[0]]);
       });
 
-      it("invokes factory with get() when key is missing in both caches", async () => {
+      it('invokes factory with get() when key is missing in both caches', async () => {
         await memoryCache.clear();
         await distributedCache.clear();
 
-        const factoryValue: Input = { name: "Factory#1", count: 42, values: [true] };
+        const factoryValue: Input = { name: 'Factory#1', count: 42, values: [true] };
         const result = await sut.get(keys[0], async () => factoryValue);
 
         expect(result).toEqual(factoryValue);
       });
     });
 
-    describe("check not off-by-one for timing", () => {
-      it("treats entries as fresh when exactly at TTL boundary", async () => {
+    describe('check not off-by-one for timing', () => {
+      it('treats entries as fresh when exactly at TTL boundary', async () => {
         await distributedCache.clear();
         await vitest.advanceTimersByTimeAsync(ttlM_ms - 2);
 
@@ -274,7 +276,7 @@ describe("MultiTieredCache Tests", () => {
         await expectCacheEntriesFresh(keys, memoryCache);
       });
 
-      it("treats entries as stale when exactly one millisecond past TTL boundary", async () => {
+      it('treats entries as stale when exactly one millisecond past TTL boundary', async () => {
         await vitest.advanceTimersByTimeAsync(ttlM_ms);
 
         await expectCacheEntriesStale(keys, memoryCache);
@@ -285,7 +287,7 @@ describe("MultiTieredCache Tests", () => {
         await expectCacheEntriesFresh(keys, memoryCache);
       });
 
-      it("keeps entries in cache when exactly at lifetime boundary minus 1ms", async () => {
+      it('keeps entries in cache when exactly at lifetime boundary minus 1ms', async () => {
         await distributedCache.clear();
         await vitest.advanceTimersByTimeAsync(lifetimeM_ms - 1);
 
@@ -293,13 +295,13 @@ describe("MultiTieredCache Tests", () => {
         await expectCacheEntriesStale(keys, memoryCache);
       });
 
-      it("removes entries from cache when exactly at lifetime boundary", async () => {
+      it('removes entries from cache when exactly at lifetime boundary', async () => {
         await vitest.advanceTimersByTimeAsync(lifetimeM_ms);
 
         await expectCacheEntriesDoNotExist(keys, memoryCache);
       });
 
-      it("handles mixed timing states in distributed cache at TTL boundary", async () => {
+      it('handles mixed timing states in distributed cache at TTL boundary', async () => {
         await memoryCache.clear();
         await vitest.advanceTimersByTimeAsync(ttlD_ms);
 
@@ -310,7 +312,7 @@ describe("MultiTieredCache Tests", () => {
         await expectCacheEntriesStaleAtCurrentTime(keys, memoryCache);
       });
 
-      it("handles boundary case when memory TTL equals distributed TTL", async () => {
+      it('handles boundary case when memory TTL equals distributed TTL', async () => {
         const equalTTL = 1;
         const equalTTL_ms = equalTTL * MS_IN_A_SEC;
 
@@ -348,16 +350,16 @@ describe("MultiTieredCache Tests", () => {
     });
   });
 
-  describe("other operations", () => {
-    const testKey = "test-key";
-    const testValue: Input = { name: "Test Value", count: 1, values: [true] };
+  describe('other operations', () => {
+    const testKey = 'test-key';
+    const testValue: Input = { name: 'Test Value', count: 1, values: [true] };
     const testBatch = new Map([
-      ["key1", { name: "Value 1", count: 1, values: [true] }],
-      ["key2", { name: "Value 2", count: 2, values: [false, true] }],
+      ['key1', { name: 'Value 1', count: 1, values: [true] }],
+      ['key2', { name: 'Value 2', count: 2, values: [false, true] }],
     ]);
 
-    describe("set", () => {
-      it("sets value in both memory and distributed caches", async () => {
+    describe('set', () => {
+      it('sets value in both memory and distributed caches', async () => {
         await sut.set(testKey, testValue);
 
         const memoryEntry = await memoryCache.get<CacheEntry<Input>>(testKey);
@@ -367,7 +369,7 @@ describe("MultiTieredCache Tests", () => {
         expect(distributedEntry?.value).toEqual(testValue);
       });
 
-      it("sets fresh entries by default", async () => {
+      it('sets fresh entries by default', async () => {
         await sut.set(testKey, testValue);
 
         const memoryEntry = await memoryCache.get<CacheEntry<Input>>(testKey);
@@ -378,32 +380,42 @@ describe("MultiTieredCache Tests", () => {
       });
     });
 
-    describe("setBatch", () => {
-      it("sets multiple values in both caches", async () => {
+    describe('setBatch', () => {
+      it('sets multiple values in both caches', async () => {
         await sut.setBatch(testBatch);
 
-        const memoryEntries = await memoryCache.getMany<CacheEntry<Input>>(Array.from(testBatch.keys()));
-        const distributedEntries = await distributedCache.getMany<CacheEntry<Input>>(Array.from(testBatch.keys()));
+        const memoryEntries = await memoryCache.getMany<CacheEntry<Input>>(
+          Array.from(testBatch.keys()),
+        );
+        const distributedEntries = await distributedCache.getMany<CacheEntry<Input>>(
+          Array.from(testBatch.keys()),
+        );
 
-        expect(memoryEntries[0]?.value).toEqual(testBatch.get("key1"));
-        expect(memoryEntries[1]?.value).toEqual(testBatch.get("key2"));
-        expect(distributedEntries[0]?.value).toEqual(testBatch.get("key1"));
-        expect(distributedEntries[1]?.value).toEqual(testBatch.get("key2"));
+        expect(memoryEntries[0]?.value).toEqual(testBatch.get('key1'));
+        expect(memoryEntries[1]?.value).toEqual(testBatch.get('key2'));
+        expect(distributedEntries[0]?.value).toEqual(testBatch.get('key1'));
+        expect(distributedEntries[1]?.value).toEqual(testBatch.get('key2'));
       });
 
-      it("sets fresh entries by default", async () => {
+      it('sets fresh entries by default', async () => {
         await sut.setBatch(testBatch);
 
-        const memoryEntries = await memoryCache.getMany<CacheEntry<Input>>(Array.from(testBatch.keys()));
-        const distributedEntries = await distributedCache.getMany<CacheEntry<Input>>(Array.from(testBatch.keys()));
+        const memoryEntries = await memoryCache.getMany<CacheEntry<Input>>(
+          Array.from(testBatch.keys()),
+        );
+        const distributedEntries = await distributedCache.getMany<CacheEntry<Input>>(
+          Array.from(testBatch.keys()),
+        );
 
         expect(memoryEntries.every((e) => e?.freshUntil && e.freshUntil > Date.now())).toBe(true);
-        expect(distributedEntries.every((e) => e?.freshUntil && e.freshUntil > Date.now())).toBe(true);
+        expect(distributedEntries.every((e) => e?.freshUntil && e.freshUntil > Date.now())).toBe(
+          true,
+        );
       });
     });
 
-    describe("has", () => {
-      it("returns true when key exists in memory cache", async () => {
+    describe('has', () => {
+      it('returns true when key exists in memory cache', async () => {
         await memoryCache.set(testKey, { value: testValue, freshUntil: Date.now() + 1000 });
 
         const result = await sut.has(testKey);
@@ -411,7 +423,7 @@ describe("MultiTieredCache Tests", () => {
         expect(result).toBe(true);
       });
 
-      it("returns true when key exists in distributed cache", async () => {
+      it('returns true when key exists in distributed cache', async () => {
         await distributedCache.set(testKey, { value: testValue, freshUntil: Date.now() + 1000 });
 
         const result = await sut.has(testKey);
@@ -419,15 +431,15 @@ describe("MultiTieredCache Tests", () => {
         expect(result).toBe(true);
       });
 
-      it("returns false when key does not exist in either cache", async () => {
-        const result = await sut.has("non-existent-key");
+      it('returns false when key does not exist in either cache', async () => {
+        const result = await sut.has('non-existent-key');
 
         expect(result).toBe(false);
       });
     });
 
-    describe("delete", () => {
-      it("removes key from both memory and distributed caches", async () => {
+    describe('delete', () => {
+      it('removes key from both memory and distributed caches', async () => {
         await memoryCache.set(testKey, { value: testValue, freshUntil: Date.now() + 1000 });
         await distributedCache.set(testKey, { value: testValue, freshUntil: Date.now() + 1000 });
 
@@ -440,18 +452,18 @@ describe("MultiTieredCache Tests", () => {
         expect(distributedResult).toBe(false);
       });
 
-      it("handles deletion of non-existent key gracefully", async () => {
-        await expect(sut.delete("non-existent-key")).resolves.not.toThrow();
+      it('handles deletion of non-existent key gracefully', async () => {
+        await expect(sut.delete('non-existent-key')).resolves.not.toThrow();
       });
     });
 
-    describe("deleteBatch", () => {
-      it("removes multiple keys from both caches", async () => {
-        const keys = ["key1", "key2"];
-        await memoryCache.set("key1", { value: testValue, freshUntil: Date.now() + 1000 });
-        await memoryCache.set("key2", { value: testValue, freshUntil: Date.now() + 1000 });
-        await distributedCache.set("key1", { value: testValue, freshUntil: Date.now() + 1000 });
-        await distributedCache.set("key2", { value: testValue, freshUntil: Date.now() + 1000 });
+    describe('deleteBatch', () => {
+      it('removes multiple keys from both caches', async () => {
+        const keys = ['key1', 'key2'];
+        await memoryCache.set('key1', { value: testValue, freshUntil: Date.now() + 1000 });
+        await memoryCache.set('key2', { value: testValue, freshUntil: Date.now() + 1000 });
+        await distributedCache.set('key1', { value: testValue, freshUntil: Date.now() + 1000 });
+        await distributedCache.set('key2', { value: testValue, freshUntil: Date.now() + 1000 });
 
         await sut.deleteBatch(keys);
 
@@ -462,24 +474,24 @@ describe("MultiTieredCache Tests", () => {
         expect(distributedResults.every((r) => r === false)).toBe(true);
       });
 
-      it("handles deletion of non-existent keys gracefully", async () => {
-        await expect(sut.deleteBatch(["non-existent-1", "non-existent-2"])).resolves.not.toThrow();
+      it('handles deletion of non-existent keys gracefully', async () => {
+        await expect(sut.deleteBatch(['non-existent-1', 'non-existent-2'])).resolves.not.toThrow();
       });
     });
 
-    describe("clear", () => {
-      it("removes all entries from both caches", async () => {
-        await memoryCache.set("key1", { value: testValue, freshUntil: Date.now() + 1000 });
-        await memoryCache.set("key2", { value: testValue, freshUntil: Date.now() + 1000 });
-        await distributedCache.set("key1", { value: testValue, freshUntil: Date.now() + 1000 });
-        await distributedCache.set("key2", { value: testValue, freshUntil: Date.now() + 1000 });
+    describe('clear', () => {
+      it('removes all entries from both caches', async () => {
+        await memoryCache.set('key1', { value: testValue, freshUntil: Date.now() + 1000 });
+        await memoryCache.set('key2', { value: testValue, freshUntil: Date.now() + 1000 });
+        await distributedCache.set('key1', { value: testValue, freshUntil: Date.now() + 1000 });
+        await distributedCache.set('key2', { value: testValue, freshUntil: Date.now() + 1000 });
 
         await sut.clear();
 
-        const memoryResult1 = await memoryCache.has("key1");
-        const memoryResult2 = await memoryCache.has("key2");
-        const distributedResult1 = await distributedCache.has("key1");
-        const distributedResult2 = await distributedCache.has("key2");
+        const memoryResult1 = await memoryCache.has('key1');
+        const memoryResult2 = await memoryCache.has('key2');
+        const distributedResult1 = await distributedCache.has('key1');
+        const distributedResult2 = await distributedCache.has('key2');
 
         expect(memoryResult1).toBe(false);
         expect(memoryResult2).toBe(false);
@@ -489,19 +501,19 @@ describe("MultiTieredCache Tests", () => {
     });
   });
 
-  describe.skip("when stampeding distributed cache", () => {
+  describe.skip('when stampeding distributed cache', () => {
     // Test stampede protection on the distributed cache
   });
 
-  describe.skip("when stampeding factory", () => {
+  describe.skip('when stampeding factory', () => {
     // Test stampede proteciton on the factory method
   });
 
-  describe("when distributed cache times out", () => {
+  describe('when distributed cache times out', () => {
     // Test timeouts (soft/strict) on the distributed cach
     const inputs: { [key: string]: Input } = {
-      "#1": { name: "Case #1", count: 2, values: [true, false] },
-      "#2": { name: "Case #2", count: 3, values: [false, true, false] },
+      '#1': { name: 'Case #1', count: 2, values: [true, false] },
+      '#2': { name: 'Case #2', count: 3, values: [false, true, false] },
     };
 
     const keys = Object.keys(inputs);
@@ -521,13 +533,15 @@ describe("MultiTieredCache Tests", () => {
       };
     });
 
-    it("returns stale memory data when distributed cache soft timeout occurs", async () => {
+    it('returns stale memory data when distributed cache soft timeout occurs', async () => {
       // Make memory cache stale so it needs to check distributed cache
       await vitest.advanceTimersByTimeAsync(ttlM_ms);
       await expectCacheEntriesStale(keys, memoryCache);
 
       // Mock distributed cache to be slow (exceeds soft timeout)
-      distributedCache.getMany = vitest.fn().mockImplementation((k) => delayedGetMany(k, timeoutSoftD + 0.01));
+      distributedCache.getMany = vitest
+        .fn()
+        .mockImplementation((k) => delayedGetMany(k, timeoutSoftD + 0.01));
 
       const action = sut.getBatch(keys);
 
@@ -543,12 +557,14 @@ describe("MultiTieredCache Tests", () => {
       await expectCacheEntriesStale(keys, memoryCache);
     });
 
-    it("waits when distributed cache soft timeout occurs without stale data", async () => {
+    it('waits when distributed cache soft timeout occurs without stale data', async () => {
       // Make memory cache expire so it does not have anything stale
       await advanceSeconds(lifetimeM);
 
       // Mock distributed cache to be slow (exceeds soft timeout)
-      distributedCache.getMany = vitest.fn().mockImplementation((k) => delayedGetMany(k, timeoutSoftD + 0.1));
+      distributedCache.getMany = vitest
+        .fn()
+        .mockImplementation((k) => delayedGetMany(k, timeoutSoftD + 0.1));
 
       const action = sut.getBatch(keys);
 
@@ -570,14 +586,16 @@ describe("MultiTieredCache Tests", () => {
       await expectCacheEntriesFresh(keys, memoryCache);
     });
 
-    it("updates cache in the background with values after soft timeout", async () => {
+    it('updates cache in the background with values after soft timeout', async () => {
       // Make memory cache stale so it needs to check distributed cache
       await vitest.advanceTimersByTimeAsync(ttlM_ms);
       await expectCacheEntriesStale(keys, memoryCache);
 
       // Mock distributed cache to be slow (exceeds soft timeout)
       const extraTime = 0.1;
-      distributedCache.getMany = vitest.fn().mockImplementation((k) => delayedGetMany(k, timeoutSoftD + extraTime));
+      distributedCache.getMany = vitest
+        .fn()
+        .mockImplementation((k) => delayedGetMany(k, timeoutSoftD + extraTime));
 
       const action = sut.getBatch(keys);
 
@@ -599,12 +617,14 @@ describe("MultiTieredCache Tests", () => {
       await expectCacheEntriesFresh(keys, memoryCache);
     });
 
-    it("throws when distributed cache strict timeout occurs without stale data", async () => {
+    it('throws when distributed cache strict timeout occurs without stale data', async () => {
       // Make memory cache expire so it does not have anything stale
       await advanceSeconds(lifetimeM);
 
       // Mock distributed cache to be slow (exceeds soft timeout)
-      distributedCache.getMany = vitest.fn().mockImplementation((k) => delayedGetMany(k, timeoutStrictD + 0.1));
+      distributedCache.getMany = vitest
+        .fn()
+        .mockImplementation((k) => delayedGetMany(k, timeoutStrictD + 0.1));
 
       const action = sut.getBatch(keys);
 
@@ -615,17 +635,17 @@ describe("MultiTieredCache Tests", () => {
 
       await advanceSeconds(0.1);
 
-      await expect(action).rejects.toBe("strict timeout");
+      await expect(action).rejects.toThrowError('strict timeout');
 
       // Memory cache should still be empty, because it was not updated
       await expectCacheEntriesDoNotExist(keys, memoryCache);
     });
   });
 
-  describe("when factory times out", () => {
+  describe('when factory times out', () => {
     const inputs: { [key: string]: Input } = {
-      "#1": { name: "Case #1", count: 2, values: [true, false] },
-      "#2": { name: "Case #2", count: 3, values: [false, true, false] },
+      '#1': { name: 'Case #1', count: 2, values: [true, false] },
+      '#2': { name: 'Case #2', count: 3, values: [false, true, false] },
     };
 
     const keys = Object.keys(inputs);
@@ -646,15 +666,19 @@ describe("MultiTieredCache Tests", () => {
         return result;
       };
       delayedFactory = (ks, delay) =>
-        new Promise((resolve) => setTimeout(resolve, delay * MS_IN_A_SEC)).then(() => originalFactory(ks));
+        new Promise((resolve) => setTimeout(resolve, delay * MS_IN_A_SEC)).then(() =>
+          originalFactory(ks),
+        );
     });
 
-    it("returns stale distributed data when soft timeout occurs", async () => {
+    it('returns stale distributed data when soft timeout occurs', async () => {
       // Expire distributed cache TTL so entries become stale
       await advanceSeconds(ttlD);
 
       // Mock factory to be slow (exceeds soft timeout)
-      const factoryFn = vitest.fn().mockImplementation((ks) => delayedFactory(ks, timeoutSoftF + 0.1));
+      const factoryFn = vitest
+        .fn()
+        .mockImplementation((ks) => delayedFactory(ks, timeoutSoftF + 0.1));
       const action = sut.getBatch(keys, factoryFn);
 
       // Advance to soft timeout
@@ -670,12 +694,14 @@ describe("MultiTieredCache Tests", () => {
       await expectCacheEntriesStale(keys, memoryCache);
     });
 
-    it("waits when soft timeout occurs without stale data", async () => {
+    it('waits when soft timeout occurs without stale data', async () => {
       // Clear distributed cache to force missing keys and skip soft timeout
       await distributedCache.clear();
 
       // Mock factory to be slow (exceeds soft timeout)
-      const factoryFn = vitest.fn().mockImplementation((ks) => delayedFactory(ks, timeoutSoftF + 0.1));
+      const factoryFn = vitest
+        .fn()
+        .mockImplementation((ks) => delayedFactory(ks, timeoutSoftF + 0.1));
       const action = sut.getBatch(keys, factoryFn);
 
       // Advance to soft timeout
@@ -694,13 +720,15 @@ describe("MultiTieredCache Tests", () => {
       await expectCacheEntriesFresh(keys, memoryCache);
     });
 
-    it("updates cache in the background with values after soft timeout", async () => {
+    it('updates cache in the background with values after soft timeout', async () => {
       // Expire distributed cache TTL so entries become stale
       await advanceSeconds(ttlD);
 
       const extraTime = 0.1;
       // Mock factory to be slow by extraTime
-      const factoryFn = vitest.fn().mockImplementation((ks) => delayedFactory(ks, timeoutSoftF + extraTime));
+      const factoryFn = vitest
+        .fn()
+        .mockImplementation((ks) => delayedFactory(ks, timeoutSoftF + extraTime));
       const action = sut.getBatch(keys, factoryFn);
 
       // Advance to soft timeout and get fallback stale data
@@ -720,16 +748,18 @@ describe("MultiTieredCache Tests", () => {
       await expectCacheEntriesFresh(keys, memoryCache);
     });
 
-    it("throws when factory strict timeout occurs without stale data in distributed cache", async () => {
+    it('throws when factory strict timeout occurs without stale data in distributed cache', async () => {
       await distributedCache.clear();
       await advanceSeconds(lifetimeM - ttlM);
 
-      const factoryFn = vitest.fn().mockImplementation((ks: Key[]) => delayedFactory(ks, timeoutStrictF + 0.1));
+      const factoryFn = vitest
+        .fn()
+        .mockImplementation((ks: Key[]) => delayedFactory(ks, timeoutStrictF + 0.1));
       const action = sut.getBatch(keys, factoryFn);
 
       await advanceSeconds(timeoutStrictF);
       await advanceSeconds(0.1);
-      await expect(action).rejects.toBe("strict timeout");
+      await expect(action).rejects.toThrowError('strict timeout');
 
       await expectCacheEntriesDoNotExist(keys, memoryCache);
     });

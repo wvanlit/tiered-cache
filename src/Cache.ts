@@ -1,10 +1,17 @@
-import Keyv, { KeyvEntry } from "keyv";
-import { resolve } from "path";
+import type { KeyvEntry } from 'keyv';
+import type Keyv from 'keyv';
 
 /**
  * Only JSON serialization compatible values
  */
-export type Cacheable = string | number | boolean | null | undefined | Cacheable[] | { [key: string]: Cacheable };
+export type Cacheable =
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
+  | Cacheable[]
+  | { [key: string]: Cacheable };
 
 export type Key = string;
 export type Batch<T> = Map<Key, T>;
@@ -14,7 +21,10 @@ export interface Cache {
   get<T extends Cacheable>(key: Key, factory: () => Promise<T>): Promise<T>;
 
   getBatch<T extends Cacheable>(keys: Key[]): Promise<Batch<T>>;
-  getBatch<T extends Cacheable>(keys: Key[], factory: (keys: Key[]) => Promise<Batch<T>>): Promise<Batch<T>>;
+  getBatch<T extends Cacheable>(
+    keys: Key[],
+    factory: (keys: Key[]) => Promise<Batch<T>>,
+  ): Promise<Batch<T>>;
 
   set<T extends Cacheable>(key: Key, value: T): Promise<void>;
   setBatch<T extends Cacheable>(values: Batch<T>): Promise<void>;
@@ -91,14 +101,21 @@ export default class MultiTieredCache implements Cache {
   private readonly memoryCache: Keyv;
   private readonly distributedCache: Keyv;
 
-  constructor(config: CacheConfiguration) {
+  public constructor(config: CacheConfiguration) {
     this.config = config;
     this.memoryCache = config.memory.cache;
     this.distributedCache = config.distributed.cache;
   }
 
-  async getBatch<T extends Cacheable>(keys: Key[], factory?: (keys: Key[]) => Promise<Batch<T>>): Promise<Batch<T>> {
-    const { fresh: freshM, stale: staleM, miss: missM } = await this.__getFromCache<T>(this.memoryCache, keys);
+  public async getBatch<T extends Cacheable>(
+    keys: Key[],
+    factory?: (keys: Key[]) => Promise<Batch<T>>,
+  ): Promise<Batch<T>> {
+    const {
+      fresh: freshM,
+      stale: staleM,
+      miss: missM,
+    } = await this.__getFromCache<T>(this.memoryCache, keys);
 
     if (freshM.size === keys.length) {
       return freshM;
@@ -145,8 +162,8 @@ export default class MultiTieredCache implements Cache {
       async (distributedResults) => {
         // Ensure distributed values are in the memory cache for performance & graceful fallback
         // Not awaited to ensure it happens in the background
-        this.setBatchInCache(distributedResults.fresh, this.config.memory, true);
-        this.setBatchInCache(distributedResults.stale, this.config.memory, false);
+        void this.setBatchInCache(distributedResults.fresh, this.config.memory, true);
+        void this.setBatchInCache(distributedResults.stale, this.config.memory, false);
       },
       this.config.distributedTimeout,
       // Skip soft timeout if we have missing keys
@@ -154,7 +171,7 @@ export default class MultiTieredCache implements Cache {
     );
 
     // On timeout, return stale as stale - we'd rather return something than nothing
-    if (result === "timeout") {
+    if (result === 'timeout') {
       return {
         freshD: new Map(),
         staleD: staleM,
@@ -195,14 +212,14 @@ export default class MultiTieredCache implements Cache {
     );
 
     // On timeout, return stale as stale - we'd rather return something than nothing
-    if (result === "timeout") {
+    if (result === 'timeout') {
       return staleD;
     }
 
     return result;
   }
 
-  async get<T extends Cacheable>(key: Key, factory?: () => Promise<T>): Promise<T> {
+  public async get<T extends Cacheable>(key: Key, factory?: () => Promise<T>): Promise<T> {
     const batchFactory = factory ? async () => new Map([[key, await factory()]]) : undefined;
 
     const v = await this.getBatch([key], batchFactory);
@@ -211,11 +228,14 @@ export default class MultiTieredCache implements Cache {
     return v.get(key)!;
   }
 
-  set<T extends Cacheable>(key: Key, value: T): Promise<void> {
+  public set<T extends Cacheable>(key: Key, value: T): Promise<void> {
     return this.setBatch(new Map([[key, value]]));
   }
 
-  async setBatch<T extends Cacheable>(values: Batch<T>, fresh: boolean = true): Promise<void> {
+  public async setBatch<T extends Cacheable>(
+    values: Batch<T>,
+    fresh: boolean = true,
+  ): Promise<void> {
     await this.setBatchInCache(values, this.config.memory, fresh);
     await this.setBatchInCache(values, this.config.distributed, fresh);
   }
@@ -235,21 +255,21 @@ export default class MultiTieredCache implements Cache {
     await config.cache.setMany(entries);
   }
 
-  async has(key: Key): Promise<boolean> {
+  public async has(key: Key): Promise<boolean> {
     return (await this.memoryCache.has(key)) || (await this.distributedCache.has(key));
   }
 
-  async delete(key: Key): Promise<void> {
+  public async delete(key: Key): Promise<void> {
     await this.memoryCache.delete(key);
     await this.distributedCache.delete(key);
   }
 
-  async deleteBatch(keys: Key[]): Promise<void> {
+  public async deleteBatch(keys: Key[]): Promise<void> {
     await this.memoryCache.deleteMany(keys);
     await this.distributedCache.deleteMany(keys);
   }
 
-  async clear(): Promise<void> {
+  public async clear(): Promise<void> {
     await this.memoryCache.clear();
     await this.distributedCache.clear();
   }
@@ -261,7 +281,10 @@ export default class MultiTieredCache implements Cache {
     config: CacheLayerConfiguration,
     fresh = true,
   ): KeyvEntry {
-    const entry: CacheEntry<T> = { value, freshUntil: fresh ? now + config.ttl * MS_IN_A_SEC : now };
+    const entry: CacheEntry<T> = {
+      value,
+      freshUntil: fresh ? now + config.ttl * MS_IN_A_SEC : now,
+    };
 
     return {
       key,
@@ -311,10 +334,12 @@ export default class MultiTieredCache implements Cache {
     whenNotTimedOut: (result: T) => Promise<void>,
     timeout: CacheTimeout,
     skipSoftTimeout: boolean,
-  ): Promise<T | "timeout"> {
-    const strictTimeout = new Promise<T>((_, reject) =>
-      setTimeout(() => reject("strict timeout"), timeout.strict * MS_IN_A_SEC),
-    );
+  ): Promise<T | 'timeout'> {
+    const strictTimeout = new Promise<void>((res, _) =>
+      setTimeout(res, timeout.strict * MS_IN_A_SEC),
+    ).then((_) => {
+      throw new Error('strict timeout');
+    });
 
     const factoryPromise = Promise.race<T>([action(), strictTimeout])
       // This is only executed when the timeout doesn't happen
@@ -327,8 +352,8 @@ export default class MultiTieredCache implements Cache {
       return factoryPromise;
     }
 
-    const softTimeout: Promise<"timeout"> = new Promise<"timeout">((resolve) =>
-      setTimeout(() => resolve("timeout"), timeout.soft * MS_IN_A_SEC),
+    const softTimeout: Promise<'timeout'> = new Promise<'timeout'>((resolve) =>
+      setTimeout(() => resolve('timeout'), timeout.soft * MS_IN_A_SEC),
     );
 
     return Promise.race([factoryPromise, softTimeout]);
