@@ -4,18 +4,65 @@
 
 ## Features
 
-- **Tiered Caching**: Automatically falls back to distributed cache if the memory cache misses.
-  - **Memory Cache**: Fast in-memory caching for quick access.
-  - **Distributed Cache**: Supports Redis and other distributed cache systems.
-- **TypeScript Support**: Fully typed for better development experience.
-- **Built on top of KeyV**: Utilizes KeyV to handle the low level caching API per cache layer.
-- **High Performance Features**: Because you don't want a dumb cache layer:
-  - **Batch Operations**: Supports batch get and set operations for better performance.
-  - **Stampede Protection**: Prevents multiple similar requests from firing at the same time.
-    - **Cache Level**: Does not send multiple requests to the distributed cache for the same key.
-    - **Factory Level**: Prevents multiple requests to the factory function for the same key.
-  - **Strict Timeouts**: Configurable strict timeouts for cache operations to ensure speed.
-    - **Soft Timeouts**: Returns cached data even if the operation times out, allowing for a fallback mechanism.
-    - **Hard Timeouts**: Throws an error if the operation exceeds the configured timeout, allowing your code to handle it quickly, but gracefully.
-  - **Soft Expiry**: Supports soft expiry for cache entries, allowing them to be used in case of a failures or timeouts.
-  - **Background updates**: Allows for updating cache entries in the background without blocking the main thread.
+- In-memory and distributed tier caching
+- Batch operations
+- Soft expiry and strict timeouts
+- Background updates on timeout
+
+
+## Batch Get flow
+
+The batch get flow is probably the most complex part of the cache.
+
+Here's a detailed diagram of how it works:
+
+```mermaid
+flowchart LR
+    %% ─────────── Nodes ───────────
+    Input(["Keys[]"])
+
+    subgraph Memory Cache
+        PartMem["Get from Memory<br/>fresh · stale · miss"]
+    end
+
+    subgraph Distributed Cache
+        PartDist["Get from Distributed<br/>fresh · stale · miss"]
+        WriteMem["Background write<br/>to memory cache"]
+    end
+
+    subgraph factorySub["Factory"]
+        SLock["Coalesce fetches"]
+        Factory["Get from factory"]
+        WriteBoth["Write to memory<br/>+ distributed cache"]
+    end
+
+    Merge["Merge into Batch"]
+    Output([Batch])
+    Error(["Timeout Error"])
+
+    %% ─────────── Flow ───────────
+    Input --> PartMem
+
+    %% Memory-tier paths
+    PartMem -- fresh --> Merge
+    PartMem -- stale & miss --> PartDist
+
+    %% Distributed-tier paths
+    PartDist -- fresh --> Merge
+    PartDist -. fresh .-> WriteMem
+    PartDist -- MC stale (on soft timeout) --> Merge
+    PartDist -- stale & miss --> SLock
+    PartDist -- strict timeout --> Error
+
+
+    %% Stampede protection and factory
+    SLock --> Factory --> WriteBoth --> Merge
+    Factory -- DC stale (on soft timeout) --> Merge
+    Factory -- strict timeout --> Error
+
+
+    %% Final output
+    Merge --> Output
+```
+
+Dotted lines indicate background operations that do not block the main flow.
