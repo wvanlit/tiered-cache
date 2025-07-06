@@ -544,6 +544,37 @@ describe('MultiTieredCache Tests', () => {
       expect(result.has('y')).toBe(false);
       expect(result.get('x')).toBe('only-x');
     });
+
+    it('coalesces overlapping inflight keys correctly', async () => {
+      const keys1 = ['a', 'b'];
+      const keys2 = ['b', 'c'];
+
+      const factory = vitest.fn(async (requestedKeys: string[]) => {
+        await new Promise((res) => setTimeout(res, 10));
+        return new Map<Key, string>(requestedKeys.map((k) => [k, `value-${k}`]));
+      });
+
+      const req1 = sut.getBatch(keys1, factory);
+      const req2 = sut.getBatch(keys2, factory);
+
+      await vitest.advanceTimersByTimeAsync(10);
+
+      const res1 = await req1;
+      const res2 = await req2;
+
+      expect(factory).toHaveBeenCalledTimes(2);
+      expect(factory).toHaveBeenNthCalledWith(1, keys1);
+      expect(factory).toHaveBeenNthCalledWith(2, ['c']);
+
+      // Collapse expect for res1 and res2 to satisfy lint formatting
+      expect(res1).toEqual(new Map<Key, string>(keys1.map((k) => [k, `value-${k}`])));
+      expect(res2).toEqual(
+        new Map<Key, string>([
+          ['b', 'value-b'],
+          ['c', 'value-c'],
+        ]),
+      );
+    });
   });
 
   describe('when distributed cache times out', () => {

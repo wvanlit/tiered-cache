@@ -148,17 +148,6 @@ export default class MultiTieredCache implements Cache {
   private async __getFromDistributedCache<T extends Cacheable>(staleM: Batch<T>, missM: Key[]) {
     const keys = [...missM, ...staleM.keys()];
 
-    /*
-    TODO: Acquire stampede lock per key
-      Full hit
-        Wait until done
-      Partial hit
-        Fetch keys + put in stampede lock
-        Wait until done for hit
-      Full miss
-        Fetch keys + put in stampede lock
-    */
-
     const result = await this.withTimeout(
       () => this.__getFromCache<T>(this.distributedCache, keys),
       async (distributedResults) => {
@@ -191,17 +180,6 @@ export default class MultiTieredCache implements Cache {
   ): Promise<Batch<T>> {
     const keys = [...missD, ...staleD.keys()];
 
-    /*
-    TODO: Acquire stampede lock per key
-      Full hit
-        Skip if background
-        Wait if not
-      Partial hit
-        Fetch keys + put in stampede lock
-        Skip if background / Wait until done for hit
-      Full miss
-        Fetch keys + put in stampede lock
-    */
     const result = await this.withTimeout(
       () => this.withStampedeProtection<T>(keys, factory, this.inflightForFactory),
       async (results) => {
