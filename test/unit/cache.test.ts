@@ -505,8 +505,45 @@ describe('MultiTieredCache Tests', () => {
     // Test stampede protection on the distributed cache
   });
 
-  describe.skip('when stampeding factory', () => {
-    // Test stampede proteciton on the factory method
+  describe('when stampeding factory', () => {
+    it('coalesces 10 concurrent factory calls for the same set of keys', async () => {
+      const keys = ['a', 'b'];
+
+      // spy on factory and simulate async delay
+      const factory = vitest.fn(async (requestedKeys: string[]) => {
+        await new Promise((res) => setTimeout(res, 10));
+        return new Map<Key, string>(requestedKeys.map((k) => [k, `value-${k}`]));
+      });
+
+      const requests = Array.from({ length: 10 }, () => sut.getBatch(keys, factory));
+
+      await vitest.advanceTimersByTimeAsync(10);
+
+      const results = await Promise.all(requests);
+
+      // factory should have been called only once with the full key set
+      expect(factory).toHaveBeenCalledTimes(1);
+      expect(factory).toHaveBeenCalledWith(keys);
+
+      // all callers should receive the same batch result
+      for (const batch of results) {
+        expect(batch).toEqual(new Map<Key, string>(keys.map((k) => [k, `value-${k}`])));
+      }
+    });
+
+    it('handles missing keys in factory without error', async () => {
+      const factory = async (keys: string[]) => {
+        // only resolve first key
+        await new Promise((res) => setTimeout(res, 10));
+        return new Map<Key, string>([[keys[0], `only-${keys[0]}`]]);
+      };
+      const action = sut.getBatch(['x', 'y'], factory);
+      await vitest.advanceTimersByTimeAsync(10);
+      const result = await action;
+      expect(result.has('x')).toBe(true);
+      expect(result.has('y')).toBe(false);
+      expect(result.get('x')).toBe('only-x');
+    });
   });
 
   describe('when distributed cache times out', () => {

@@ -101,6 +101,8 @@ export default class MultiTieredCache implements Cache {
   private readonly memoryCache: Keyv;
   private readonly distributedCache: Keyv;
 
+  private readonly inflightForFactory: Map<Key, Promise<unknown>> = new Map();
+
   public constructor(config: CacheConfiguration) {
     this.config = config;
     this.memoryCache = config.memory.cache;
@@ -200,11 +202,10 @@ export default class MultiTieredCache implements Cache {
       Full miss
         Fetch keys + put in stampede lock
     */
-
     const result = await this.withTimeout(
-      () => factory(keys),
+      () => this.withStampedeProtection<T>(keys, factory, this.inflightForFactory),
       async (results) => {
-        await this.setBatch(results, true);
+        await this.setBatch(results.newlyRetrieved, true);
       },
       this.config.factoryTimeout,
       // Skip soft timeout if we have missing keys
@@ -216,7 +217,7 @@ export default class MultiTieredCache implements Cache {
       return staleD;
     }
 
-    return result;
+    return result.all;
   }
 
   public async get<T extends Cacheable>(key: Key, factory?: () => Promise<T>): Promise<T> {
@@ -357,5 +358,61 @@ export default class MultiTieredCache implements Cache {
     );
 
     return Promise.race([factoryPromise, softTimeout]);
+  }
+
+  /**
+   * Protects against request stampedes by coalescing concurrent fetches:
+   * - newlyRetrieved: entries fetched by this invocation
+   * - all: union of newlyRetrieved and any concurrent in-flight results
+   */
+  private async withStampedeProtection<T extends Cacheable>(
+    keys: Key[],
+    action: (keys: Key[]) => Promise<Batch<T>>,
+    inflight: Map<Key, Promise<unknown>>,
+  ): Promise<{ newlyRetrieved: Batch<T>; all: Batch<T> }> {
+    const inflightKeys: [Key, Promise<T | undefined>][] = [];
+    const retrievableKeys: Key[] = [];
+
+    // Helper to await and filter defined in-flight results
+    const collectInflight = async (list: [Key, Promise<T | undefined>][]): Promise<[Key, T][]> => {
+      const resolved = await Promise.all(
+        list.map(async ([k, p]) => [k, await p] as [Key, T | undefined]),
+      );
+      return resolved.reduce<[Key, T][]>((acc, [k, v]) => {
+        if (v !== undefined) acc.push([k, v]);
+        return acc;
+      }, []);
+    };
+
+    for (const key of keys) {
+      const maybeInflight = inflight.get(key);
+      if (maybeInflight) {
+        inflightKeys.push([key, maybeInflight as Promise<T | undefined>]);
+      } else {
+        retrievableKeys.push(key);
+      }
+    }
+
+    // If nothing new to fetch, resolve existing in-flight and return those only
+    if (retrievableKeys.length === 0) {
+      const entries = await collectInflight(inflightKeys);
+      return { newlyRetrieved: new Map(), all: new Map(entries) };
+    }
+
+    const newResultsPromise = action(retrievableKeys);
+
+    for (const key of retrievableKeys) {
+      inflight.set(
+        key,
+        newResultsPromise.then((t) => t.get(key)).finally(() => inflight.delete(key)),
+      );
+    }
+
+    const newlyRetrieved = await newResultsPromise;
+
+    return {
+      newlyRetrieved,
+      all: new Map<Key, T>([...newlyRetrieved, ...(await collectInflight(inflightKeys))]),
+    };
   }
 }
