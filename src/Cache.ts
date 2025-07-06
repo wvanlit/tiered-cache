@@ -19,7 +19,6 @@ export interface Cache {
   setBatch<T extends Cacheable>(values: Batch<T>): Promise<void>;
 
   has(key: Key): Promise<boolean>;
-  hasBatch(keys: Key[]): Promise<Batch<boolean>>;
 
   delete(key: Key): Promise<void>;
   deleteBatch(keys: Key[]): Promise<void>;
@@ -217,19 +216,6 @@ export default class MultiTieredCache implements Cache {
 
   async has(key: Key): Promise<boolean> {
     return (await this.memoryCache.has(key)) || (await this.distributedCache.has(key));
-  }
-
-  async hasBatch(keys: Key[]): Promise<Batch<boolean>> {
-    const inMemory = await this.memoryCache.hasMany(keys);
-    const inDistributed = await this.distributedCache.hasMany(keys);
-
-    const result = new Map();
-
-    for (let i = 0; i < keys.length; i++) {
-      result.set(keys[i], inMemory[i] || inDistributed[i]);
-    }
-
-    return result;
   }
 
   async delete(key: Key): Promise<void> {
