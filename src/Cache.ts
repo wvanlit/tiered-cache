@@ -312,20 +312,16 @@ export default class MultiTieredCache implements Cache {
     timeout: CacheTimeout,
     skipSoftTimeout: boolean,
   ): Promise<T | "timeout"> {
-    const factoryPromise = new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => reject("strict timeout"), timeout.strict * MS_IN_A_SEC);
-      
-      action()
-        .then(async (result) => {
-          clearTimeout(timer);
-          await whenNotTimedOut(result);
-          resolve(result);
-        })
-        .catch((err) => {
-          clearTimeout(timer);
-          reject(err);
-        });
-    });
+    const strictTimeout = new Promise<T>((_, reject) =>
+      setTimeout(() => reject("strict timeout"), timeout.strict * MS_IN_A_SEC),
+    );
+
+    const factoryPromise = Promise.race<T>([action(), strictTimeout])
+      // This is only executed when the timeout doesn't happen
+      .then(async (r) => {
+        await whenNotTimedOut(r);
+        return r;
+      });
 
     if (skipSoftTimeout) {
       return factoryPromise;
