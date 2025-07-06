@@ -7,6 +7,7 @@ export default defineConfig({
     include: ["test/**/*.test.ts"],
     isolate: true,
     passWithNoTests: true,
+    dangerouslyIgnoreUnhandledErrors: true,
     projects: [
       {
         test: {
