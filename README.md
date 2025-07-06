@@ -4,21 +4,11 @@
 
 ## Features
 
-- **Tiered Caching**: Automatically falls back to distributed cache if the memory cache misses.
-  - **Memory Cache**: Fast in-memory caching for quick access.
-  - **Distributed Cache**: Supports Redis and other distributed cache systems.
-- **TypeScript Support**: Fully typed for better development experience.
-- **Built on top of KeyV**: Utilizes KeyV to handle the low level caching API per cache layer.
-- **High Performance Features**: Because you don't want a dumb cache layer:
-  - **Batch Operations**: Supports batch get and set operations for better performance.
-  - **Stampede Protection**: Prevents multiple similar requests from firing at the same time.
-    - **Cache Level**: Does not send multiple requests to the distributed cache for the same key.
-    - **Factory Level**: Prevents multiple requests to the factory function for the same key.
-  - **Strict Timeouts**: Configurable strict timeouts for cache operations to ensure speed.
-    - **Soft Timeouts**: Returns cached data even if the operation times out, allowing for a fallback mechanism.
-    - **Hard Timeouts**: Throws an error if the operation exceeds the configured timeout, allowing your code to handle it quickly, but gracefully.
-  - **Soft Expiry**: Supports soft expiry for cache entries, allowing them to be used in case of a failures or timeouts.
-  - **Background updates**: Allows for updating cache entries in the background without blocking the main thread.
+- In-memory and distributed tier caching
+- Batch operations
+- Soft expiry and strict timeouts
+- Background updates on timeout
+
 
 ## Batch Get flow
 
@@ -27,52 +17,51 @@ The batch get flow is probably the most complex part of the cache.
 Here's a detailed diagram of how it works:
 
 ```mermaid
-flowchart TD
-    %% ────────── Nodes ──────────
+flowchart LR
+    %% ─────────── Nodes ───────────
     Input(["Keys[]"])
 
-    MC[/"Query Memory Cache"/]
-    PartMem[Partition<br/>fresh · stale · miss]
+    subgraph Memory Cache
+        PartMem["Get from Memory<br/>fresh · stale · miss"]
+    end
 
-    DC[/"Query Distributed Cache<br/>(timeout + stampede lock)"/]
-    PartDist[Partition<br/>fresh · stale · miss]
+    subgraph Distributed Cache
+        PartDist["Get from Distributed<br/>fresh · stale · miss"]
+        WriteMem["Background write<br/>to memory cache"]
+    end
 
-    Lock[/"Acquire factory lock"/]
-    Factory["Call factory<br/>(timeout)"]
-    UpdateAll["Write to memory + distributed"]
+    subgraph factorySub["Factory"]
+        SLock["Coalesce fetches"]
+        Factory["Get from factory"]
+        WriteBoth["Write to memory<br/>+ distributed cache"]
+    end
 
-    WriteMem["Write to memory"]
+    Merge["Merge into Batch"]
+    Output([Batch])
+    Error(["Timeout Error"])
 
-    Merge["Merge returned values<br/>into Batch<K,V>"]
-    Output(["Batch<K,V>"])
+    %% ─────────── Flow ───────────
+    Input --> PartMem
 
-    %% ────────── Flow ──────────
-    Input --> MC --> PartMem
-
-    %% Memory-cache results
+    %% Memory-tier paths
     PartMem -- fresh --> Merge
-    PartMem -- stale (return) --> Merge
-    %% background SWR
-    PartMem -. revalidate stale .-> DC
-    %% foreground
-    PartMem -- miss --> DC
+    PartMem -- stale & miss --> PartDist
 
-    %% Distributed-cache results
-    DC --> PartDist
-    PartDist -- fresh --> WriteMem --> Merge
-    PartDist -- stale (return) --> Merge
-    %% background SWR
-    PartDist -. revalidate stale .-> Lock
-     %% foreground
-    PartDist -- miss --> Lock
+    %% Distributed-tier paths
+    PartDist -- fresh --> Merge
+    PartDist -. fresh .-> WriteMem
+    PartDist -- MC stale (on soft timeout) --> Merge
+    PartDist -- stale & miss --> SLock
+    PartDist -- strict timeout --> Error
 
-    %% Factory path
-    Lock --> Factory --> UpdateAll
-    %% warm memory
-    UpdateAll --> WriteMem
-    %% only when miss path waits
-    UpdateAll --> Merge
 
+    %% Stampede protection and factory
+    SLock --> Factory --> WriteBoth --> Merge
+    Factory -- DC stale (on soft timeout) --> Merge
+    Factory -- strict timeout --> Error
+
+
+    %% Final output
     Merge --> Output
 ```
 
