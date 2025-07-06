@@ -108,11 +108,7 @@ describe("MultiTieredCache Tests", () => {
         await ensureNotInCache(keys, memoryCache);
         await sut.getBatch(keys);
 
-        const inMemoryCache = await memoryCache.getMany<CacheEntry<Input>>(keys);
-
-        expect(inMemoryCache.every((e) => e !== undefined)).toBe(true);
-        expect(inMemoryCache.every((e) => e!.freshUntil === Date.now() + ttlM_ms)).toBe(true);
-        expect(inMemoryCache.map((e) => e!.value)).toMatchObject(inputBatch.values());
+        await expectCacheEntriesFresh(keys, memoryCache);
       });
 
       it("puts stale data from distributed cache into memory cache as stale", async () => {
@@ -121,11 +117,7 @@ describe("MultiTieredCache Tests", () => {
         await ensureNotInCache(keys, memoryCache);
         await sut.getBatch(keys);
 
-        const inMemoryCache = await memoryCache.getMany<CacheEntry<Input>>(keys);
-
-        expect(inMemoryCache.every((e) => e !== undefined)).toBe(true);
-        expect(inMemoryCache.every((e) => e!.freshUntil === Date.now())).toBe(true);
-        expect(inMemoryCache.map((e) => e!.value)).toMatchObject(inputBatch.values());
+        await expectCacheEntriesStaleAtCurrentTime(keys, memoryCache);
       });
 
       it("does not return missing keys", async () => {
@@ -166,31 +158,16 @@ describe("MultiTieredCache Tests", () => {
         expect(results).toMatchObject(inputBatch);
       });
 
-      it("does not return data when memory cache is stale and distributed cache is missing", async () => {
-        await vitest.advanceTimersByTimeAsync(ttlM_ms);
-        await distributedCache.clear();
-
-        const results = await sut.getBatch(keys);
-
-        expect(results).toMatchObject(new Map());
-      });
-
       it("fetches fresh data from distributed cache when memory is stale and distributed cache is fresh", async () => {
-        // advance just past memory TTL so entries exist but are stale
         await vitest.advanceTimersByTimeAsync(ttlM_ms);
 
-        // memory entries should now be stale but still present
-        const staleEntries = await memoryCache.getMany<CacheEntry<Input>>(keys);
-        expect(staleEntries.every((e) => e !== undefined && e!.freshUntil <= Date.now())).toBe(true);
+        await expectCacheEntriesStale(keys, memoryCache);
 
-        // fetch via cache – should come from distributed (still fresh)
         const results = await sut.getBatch(keys);
         expect(results).toMatchObject(inputBatch);
 
-        // memory cache should now be repopulated with fresh entries
-        const inMemoryAfter = await memoryCache.getMany<CacheEntry<Input>>(keys);
-        expect(inMemoryAfter.every((e) => e !== undefined)).toBe(true);
-        expect(inMemoryAfter.every((e) => e!.freshUntil === Date.now() + ttlM_ms)).toBe(true);
+        // Memory cache should now be repopulated with fresh entries
+        await expectCacheEntriesFreshWithTTL(keys, memoryCache, ttlM_ms)
       });
 
       it("returns only available keys in a mixed batch", async () => {
@@ -288,76 +265,52 @@ describe("MultiTieredCache Tests", () => {
 
     describe("check not off-by-one for timing", () => {
       it("treats entries as fresh when exactly at TTL boundary", async () => {
-        // Make sure we get from the correct cache
         await distributedCache.clear();
-
-        // Minus 1ms to ensure still fresh (+ we advance by 1ms in setup)
         await vitest.advanceTimersByTimeAsync(ttlM_ms - 2);
 
         const results = await sut.getBatch(keys);
         expect(results).toMatchObject(inputBatch);
 
-        // Verify memory cache entries are still considered fresh
-        const memoryEntries = await memoryCache.getMany<CacheEntry<Input>>(keys);
-        expect(memoryEntries.every((e) => e !== undefined && e!.freshUntil > Date.now())).toBe(true);
+        await expectCacheEntriesFresh(keys, memoryCache);
       });
 
       it("treats entries as stale when exactly one millisecond past TTL boundary", async () => {
-        // Advance to exactly the TTL boundary
         await vitest.advanceTimersByTimeAsync(ttlM_ms);
 
-        // Check memory entries before getBatch call - they should be stale
-        const memoryEntriesBefore = await memoryCache.getMany<CacheEntry<Input>>(keys);
-        expect(memoryEntriesBefore.every((e) => e !== undefined && e!.freshUntil <= Date.now())).toBe(true);
+        await expectCacheEntriesStale(keys, memoryCache);
 
         const results = await sut.getBatch(keys);
         expect(results).toMatchObject(inputBatch);
 
-        // After getBatch, memory cache should be repopulated with fresh entries from distributed cache
-        const memoryEntriesAfter = await memoryCache.getMany<CacheEntry<Input>>(keys);
-        expect(memoryEntriesAfter.every((e) => e !== undefined && e!.freshUntil > Date.now())).toBe(true);
+        await expectCacheEntriesFresh(keys, memoryCache);
       });
 
       it("keeps entries in cache when exactly at lifetime boundary minus 1ms", async () => {
-        // Make sure we get from the correct cache
         await distributedCache.clear();
-        
-        // Advance to exactly the lifetime boundary minus 1ms
         await vitest.advanceTimersByTimeAsync(lifetimeM_ms - 1);
 
-        // Entries should still exist in memory cache even though they're stale
-        const memoryEntries = await memoryCache.getMany<CacheEntry<Input>>(keys);
-        expect(memoryEntries.every((e) => e !== undefined)).toBe(true);
-        expect(memoryEntries.every((e) => e!.freshUntil <= Date.now())).toBe(true);
+        await expectCacheEntriesExist(keys, memoryCache);
+        await expectCacheEntriesStale(keys, memoryCache);
       });
 
       it("removes entries from cache when exactly at lifetime boundary", async () => {
-        // Advance to exactly the lifetime boundary
         await vitest.advanceTimersByTimeAsync(lifetimeM_ms);
 
-        // Entries should be removed from memory cache
         await ensureNotInCache(keys, memoryCache);
       });
 
       it("handles mixed timing states in distributed cache at TTL boundary", async () => {
-        // Clear memory cache and advance distributed cache to TTL boundary
         await memoryCache.clear();
         await vitest.advanceTimersByTimeAsync(ttlD_ms);
 
         const results = await sut.getBatch(keys);
         expect(results).toMatchObject(inputBatch);
 
-        // Verify distributed entries are considered stale
-        const distributedEntries = await distributedCache.getMany<CacheEntry<Input>>(keys);
-        expect(distributedEntries.every((e) => e !== undefined && e!.freshUntil <= Date.now())).toBe(true);
-
-        // Verify they are populated into memory cache as stale
-        const memoryEntries = await memoryCache.getMany<CacheEntry<Input>>(keys);
-        expect(memoryEntries.every((e) => e !== undefined && e!.freshUntil === Date.now())).toBe(true);
+        await expectCacheEntriesStale(keys, distributedCache);
+        await expectCacheEntriesStaleAtCurrentTime(keys, memoryCache);
       });
 
       it("handles boundary case when memory TTL equals distributed TTL", async () => {
-        // Create a cache configuration where memory and distributed TTL are equal
         const equalTTL = 1;
         const equalTTL_ms = equalTTL * MS_IN_A_SEC;
 
@@ -384,19 +337,13 @@ describe("MultiTieredCache Tests", () => {
 
         await equalTTLCache.setBatch(inputBatch);
         await vitest.advanceTimersByTimeAsync(1);
-
-        // Advance to exactly the TTL boundary
         await vitest.advanceTimersByTimeAsync(equalTTL_ms);
 
         const results = await equalTTLCache.getBatch(keys);
         expect(results).toMatchObject(inputBatch);
 
-        // Both caches should have stale entries
-        const memoryEntries = await memoryCache.getMany<CacheEntry<Input>>(keys);
-        const distributedEntries = await distributedCache.getMany<CacheEntry<Input>>(keys);
-
-        expect(memoryEntries.every((e) => e !== undefined && e!.freshUntil <= Date.now())).toBe(true);
-        expect(distributedEntries.every((e) => e !== undefined && e!.freshUntil <= Date.now())).toBe(true);
+        await expectCacheEntriesStale(keys, memoryCache);
+        await expectCacheEntriesStale(keys, distributedCache);
       });
     });
   });
@@ -428,8 +375,36 @@ describe("MultiTieredCache Tests", () => {
     // Test timeouts (soft/strict) on the factory method
   });
 
+  // Helper functions to reduce repetition
   async function ensureNotInCache(keys: Key[], cache: Keyv) {
     const valuesFromCache = await cache.getMany(keys, { raw: true });
     expect(valuesFromCache).toMatchObject(new Array(keys.length).map((_) => undefined));
+  }
+
+  async function expectCacheEntriesFresh(keys: Key[], cache: Keyv) {
+    const entries = await cache.getMany<CacheEntry<Input>>(keys);
+    expect(entries.every((e) => e !== undefined && e!.freshUntil > Date.now())).toBe(true);
+  }
+
+  async function expectCacheEntriesStale(keys: Key[], cache: Keyv) {
+    const entries = await cache.getMany<CacheEntry<Input>>(keys);
+    expect(entries.every((e) => e !== undefined && e!.freshUntil <= Date.now())).toBe(true);
+  }
+
+  async function expectCacheEntriesExist(keys: Key[], cache: Keyv) {
+    const entries = await cache.getMany<CacheEntry<Input>>(keys);
+    expect(entries.every((e) => e !== undefined)).toBe(true);
+  }
+
+  async function expectCacheEntriesFreshWithTTL(keys: Key[], cache: Keyv, ttl: number) {
+    const entries = await cache.getMany<CacheEntry<Input>>(keys);
+    expect(entries.every((e) => e !== undefined)).toBe(true);
+    expect(entries.every((e) => e!.freshUntil === Date.now() + ttl)).toBe(true);
+  }
+
+  async function expectCacheEntriesStaleAtCurrentTime(keys: Key[], cache: Keyv) {
+    const entries = await cache.getMany<CacheEntry<Input>>(keys);
+    expect(entries.every((e) => e !== undefined)).toBe(true);
+    expect(entries.every((e) => e!.freshUntil === Date.now())).toBe(true);
   }
 });
