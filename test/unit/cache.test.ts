@@ -167,7 +167,7 @@ describe("MultiTieredCache Tests", () => {
         expect(results).toMatchObject(inputBatch);
 
         // Memory cache should now be repopulated with fresh entries
-        await expectCacheEntriesFreshWithTTL(keys, memoryCache, ttlM_ms)
+        await expectCacheEntriesFreshWithTTL(keys, memoryCache, ttlM_ms);
       });
 
       it("returns only available keys in a mixed batch", async () => {
@@ -349,15 +349,144 @@ describe("MultiTieredCache Tests", () => {
   });
 
   describe("other operations", () => {
-    // Test:
-    //  set / setBatch
-    describe("set", () => {});
-    //  has / hasBatch
-    describe("has", () => {});
-    //  delete / deleteBatch
-    describe("delete", () => {});
-    //  clear
-    describe("clear", () => {});
+    const testKey = "test-key";
+    const testValue: Input = { name: "Test Value", count: 1, values: [true] };
+    const testBatch = new Map([
+      ["key1", { name: "Value 1", count: 1, values: [true] }],
+      ["key2", { name: "Value 2", count: 2, values: [false, true] }],
+    ]);
+
+    describe("set", () => {
+      it("sets value in both memory and distributed caches", async () => {
+        await sut.set(testKey, testValue);
+
+        const memoryEntry = await memoryCache.get<CacheEntry<Input>>(testKey);
+        const distributedEntry = await distributedCache.get<CacheEntry<Input>>(testKey);
+
+        expect(memoryEntry?.value).toEqual(testValue);
+        expect(distributedEntry?.value).toEqual(testValue);
+      });
+
+      it("sets fresh entries by default", async () => {
+        await sut.set(testKey, testValue);
+
+        const memoryEntry = await memoryCache.get<CacheEntry<Input>>(testKey);
+        const distributedEntry = await distributedCache.get<CacheEntry<Input>>(testKey);
+
+        expect(memoryEntry?.freshUntil).toBeGreaterThan(Date.now());
+        expect(distributedEntry?.freshUntil).toBeGreaterThan(Date.now());
+      });
+    });
+
+    describe("setBatch", () => {
+      it("sets multiple values in both caches", async () => {
+        await sut.setBatch(testBatch);
+
+        const memoryEntries = await memoryCache.getMany<CacheEntry<Input>>(Array.from(testBatch.keys()));
+        const distributedEntries = await distributedCache.getMany<CacheEntry<Input>>(Array.from(testBatch.keys()));
+
+        expect(memoryEntries[0]?.value).toEqual(testBatch.get("key1"));
+        expect(memoryEntries[1]?.value).toEqual(testBatch.get("key2"));
+        expect(distributedEntries[0]?.value).toEqual(testBatch.get("key1"));
+        expect(distributedEntries[1]?.value).toEqual(testBatch.get("key2"));
+      });
+
+      it("sets fresh entries by default", async () => {
+        await sut.setBatch(testBatch);
+
+        const memoryEntries = await memoryCache.getMany<CacheEntry<Input>>(Array.from(testBatch.keys()));
+        const distributedEntries = await distributedCache.getMany<CacheEntry<Input>>(Array.from(testBatch.keys()));
+
+        expect(memoryEntries.every((e) => e?.freshUntil && e.freshUntil > Date.now())).toBe(true);
+        expect(distributedEntries.every((e) => e?.freshUntil && e.freshUntil > Date.now())).toBe(true);
+      });
+    });
+
+    describe("has", () => {
+      it("returns true when key exists in memory cache", async () => {
+        await memoryCache.set(testKey, { value: testValue, freshUntil: Date.now() + 1000 });
+
+        const result = await sut.has(testKey);
+
+        expect(result).toBe(true);
+      });
+
+      it("returns true when key exists in distributed cache", async () => {
+        await distributedCache.set(testKey, { value: testValue, freshUntil: Date.now() + 1000 });
+
+        const result = await sut.has(testKey);
+
+        expect(result).toBe(true);
+      });
+
+      it("returns false when key does not exist in either cache", async () => {
+        const result = await sut.has("non-existent-key");
+
+        expect(result).toBe(false);
+      });
+    });
+
+    describe("delete", () => {
+      it("removes key from both memory and distributed caches", async () => {
+        await memoryCache.set(testKey, { value: testValue, freshUntil: Date.now() + 1000 });
+        await distributedCache.set(testKey, { value: testValue, freshUntil: Date.now() + 1000 });
+
+        await sut.delete(testKey);
+
+        const memoryResult = await memoryCache.has(testKey);
+        const distributedResult = await distributedCache.has(testKey);
+
+        expect(memoryResult).toBe(false);
+        expect(distributedResult).toBe(false);
+      });
+
+      it("handles deletion of non-existent key gracefully", async () => {
+        await expect(sut.delete("non-existent-key")).resolves.not.toThrow();
+      });
+    });
+
+    describe("deleteBatch", () => {
+      it("removes multiple keys from both caches", async () => {
+        const keys = ["key1", "key2"];
+        await memoryCache.set("key1", { value: testValue, freshUntil: Date.now() + 1000 });
+        await memoryCache.set("key2", { value: testValue, freshUntil: Date.now() + 1000 });
+        await distributedCache.set("key1", { value: testValue, freshUntil: Date.now() + 1000 });
+        await distributedCache.set("key2", { value: testValue, freshUntil: Date.now() + 1000 });
+
+        await sut.deleteBatch(keys);
+
+        const memoryResults = await memoryCache.hasMany(keys);
+        const distributedResults = await distributedCache.hasMany(keys);
+
+        expect(memoryResults.every((r) => r === false)).toBe(true);
+        expect(distributedResults.every((r) => r === false)).toBe(true);
+      });
+
+      it("handles deletion of non-existent keys gracefully", async () => {
+        await expect(sut.deleteBatch(["non-existent-1", "non-existent-2"])).resolves.not.toThrow();
+      });
+    });
+
+    describe("clear", () => {
+      it("removes all entries from both caches", async () => {
+        await memoryCache.set("key1", { value: testValue, freshUntil: Date.now() + 1000 });
+        await memoryCache.set("key2", { value: testValue, freshUntil: Date.now() + 1000 });
+        await distributedCache.set("key1", { value: testValue, freshUntil: Date.now() + 1000 });
+        await distributedCache.set("key2", { value: testValue, freshUntil: Date.now() + 1000 });
+
+        await sut.clear();
+
+        const memoryResult1 = await memoryCache.has("key1");
+        const memoryResult2 = await memoryCache.has("key2");
+        const distributedResult1 = await distributedCache.has("key1");
+        const distributedResult2 = await distributedCache.has("key2");
+
+        expect(memoryResult1).toBe(false);
+        expect(memoryResult2).toBe(false);
+        expect(distributedResult1).toBe(false);
+        expect(distributedResult2).toBe(false);
+      });
+    });
   });
 
   describe("when stampeding distributed cache", () => {
