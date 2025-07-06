@@ -1,4 +1,4 @@
-import Keyv from "keyv";
+import Keyv, { KeyvEntry } from "keyv";
 
 /**
  * Only JSON serialization compatible values
@@ -91,9 +91,55 @@ export default class MultiTieredCache implements Cache {
 
   constructor(config: CacheConfiguration) {
     this.config = config;
-
     this.memoryCache = config.memory.cache;
     this.distributedCache = config.distributed.cache;
+  }
+
+  getBatch<T extends Cacheable>(keys: Key[], factory?: (keys: Key[]) => Promise<Batch<T>>): Promise<Batch<T>> {
+    /* 
+    Query Memory -> Partition
+      Fresh
+        Return as is
+      Stale
+        Return + schedule distributed fetch
+      Miss
+        distributed fetch
+    */
+    /*
+    Query Distributed
+      Acquire stampede lock per key
+        Full hit
+          Wait until done
+        Partial hit
+          Fetch keys + put in stampede lock
+          Wait until done for hit
+        Full miss
+          Fetch keys + put in stampede lock
+      
+      Partition
+        Fresh
+          Return as is
+        Stale
+          Return + schedule get from factory
+        Miss
+          Get from factory
+    */
+    /*
+    Get from factory
+      Acquire stampede lock per key
+        Full hit
+          Skip if background
+          Wait if not
+        Partial hit
+          Fetch keys + put in stampede lock
+          Skip if background / Wait until done for hit
+        Full miss
+          Fetch keys + put in stampede lock
+      Write to memory + distributed cache
+    */
+    /*
+    Merge returned values into a Batch
+    */
   }
 
   async get<T extends Cacheable>(key: Key, factory?: () => Promise<T>): Promise<T> {
@@ -105,16 +151,24 @@ export default class MultiTieredCache implements Cache {
     return v.get(key)!;
   }
 
-  getBatch<T extends Cacheable>(keys: Key[], factory?: (keys: Key[]) => Promise<Batch<T>>): Promise<Batch<T>> {
-    throw new Error("Method not implemented.");
-  }
-
   set<T extends Cacheable>(key: Key, value: T): Promise<void> {
     return this.setBatch(new Map([[key, value]]));
   }
 
-  setBatch<T extends Cacheable>(values: Batch<T>): Promise<void> {
-    throw new Error("Method not implemented.");
+  async setBatch<T extends Cacheable>(values: Batch<T>, fresh: boolean = true): Promise<void> {
+    await this.setBatchInCache(values, this.config.memory, fresh);
+    await this.setBatchInCache(values, this.config.distributed, fresh);
+  }
+
+  async setBatchInCache<T extends Cacheable>(values: Batch<T>, config: CacheLayerConfiguration, fresh: boolean) {
+    const now = this.now();
+
+    const entries = values
+      .entries()
+      .map((kv) => this.batchEntry(kv[0], kv[1], now, config, fresh))
+      .toArray();
+
+    await config.cache.setMany(entries);
   }
 
   async has(key: Key): Promise<boolean> {
@@ -147,5 +201,25 @@ export default class MultiTieredCache implements Cache {
   async clear(): Promise<void> {
     await this.memoryCache.clear();
     await this.distributedCache.clear();
+  }
+
+  batchEntry<T extends Cacheable>(
+    key: Key,
+    value: T,
+    now: UnixTimestamp,
+    config: CacheLayerConfiguration,
+    fresh = true,
+  ): KeyvEntry {
+    const entry: CacheEntry<T> = { value, freshUntil: fresh ? now + config.ttl : now };
+
+    return {
+      key,
+      value: entry,
+      ttl: now + config.lifetime,
+    };
+  }
+
+  now() {
+    return Date.now();
   }
 }
